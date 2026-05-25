@@ -13,6 +13,20 @@ export const Dashboard: React.FC<DashboardProps> = ({
 }) => {
   const { meals, targets } = useApp();
 
+  // Estado e Efeito para forçar o reset/re-render automático dos macros na virada do dia (00h)
+  const [currentDay, setCurrentDay] = React.useState(new Date().toDateString());
+
+  React.useEffect(() => {
+    const interval = setInterval(() => {
+      const todayStr = new Date().toDateString();
+      if (todayStr !== currentDay) {
+        setCurrentDay(todayStr);
+      }
+    }, 15000); // Verifica a cada 15 segundos se a data local mudou
+
+    return () => clearInterval(interval);
+  }, [currentDay]);
+
   // Filtra refeições do dia de hoje (meia-noite local até agora)
   const getTodayMeals = () => {
     const today = new Date();

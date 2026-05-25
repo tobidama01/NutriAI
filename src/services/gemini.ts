@@ -579,3 +579,167 @@ Responda rigorosamente seguindo o seguinte formato de objeto JSON:
   }
 }
 
+export interface ExtractedMealItem {
+  foodName: string;
+  weightGrams: number;
+  calories: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+  fiber: number;
+  sodium: number;
+}
+
+export interface ExtractedMeal {
+  type: 'Café da Manhã' | 'Almoço' | 'Jantar' | 'Lanche';
+  timestamp: number;
+  items: ExtractedMealItem[];
+}
+
+export interface ExtractedMealsResult {
+  meals: ExtractedMeal[];
+}
+
+/**
+ * Analisa um texto de histórico de chat importado e extrai as refeições relatadas como consumidas HOJE,
+ * estimando seus macronutrientes.
+ */
+export async function extractMealsFromChatHistory(
+  apiKey: string,
+  chatText: string,
+  modelName: string = 'gemini-2.0-flash'
+): Promise<ExtractedMealsResult> {
+  if (!apiKey) {
+    throw new Error('Chave de API do Gemini não configurada.');
+  }
+
+  await checkRateLimit();
+
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
+
+  const today = new Date();
+  const todayDateStr = today.toLocaleDateString('pt-BR', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric'
+  });
+  
+  const todayTimestampStart = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+
+  const promptText = `
+Você é uma inteligência artificial especialista em nutrição e análise de dados de alimentação.
+O usuário está importando um arquivo de texto com o histórico de uma conversa ou um diário alimentar.
+Sua missão é ler este texto e identificar TODAS as refeições que o usuário relatou ter consumido especificamente no dia de HOJE.
+
+A DATA DE HOJE É: ${todayDateStr} (Qualquer menção a 'hoje', 'nesta manhã', 'no café de hoje', etc., no texto refere-se a este dia).
+
+Instruções para análise:
+1. IDENTIFICAR CONSUMO DE HOJE: Procure por relatos de alimentos consumidos especificamente no dia de HOJE. Descarte refeições de ontem, de semanas passadas, ou planos de dieta para o futuro que ele ainda não consumiu.
+2. ESTIMAR PORÇÃO E MACROS: Se o usuário relatou comer algo sem especificar as gramas (ex: "comi um pão com ovo"), faça uma estimativa padrão realista (ex: pão francês 50g, ovo 50g) e calcule Calorias, Proteínas (g), Carboidratos (g), Gorduras (g), Fibras (g) e Sódio (mg) para cada alimento.
+3. CALCULAR TIMESTAMP APROXIMADO: Defina o timestamp de cada refeição identificada no dia de hoje. Use a hora aproximada com base no tipo da refeição:
+   - Café da Manhã: hoje às 08:00 (Timestamp: ${todayTimestampStart + 8 * 60 * 60 * 1000})
+   - Almoço: hoje às 12:30 (Timestamp: ${todayTimestampStart + 12.5 * 60 * 60 * 1000})
+   - Lanche: hoje às 16:30 (Timestamp: ${todayTimestampStart + 16.5 * 60 * 60 * 1000})
+   - Jantar: hoje às 20:30 (Timestamp: ${todayTimestampStart + 20.5 * 60 * 60 * 1000})
+4. RETORNAR APENAS O JSON ESTRUTURADO. Se nenhuma refeição consumida hoje for encontrada no texto, retorne o campo "meals" como uma lista vazia [].
+
+Siga rigorosamente este formato de retorno JSON:
+{
+  "meals": [
+    {
+      "type": "Almoço", // Deve ser exclusivamente um destes: "Café da Manhã", "Almoço", "Jantar", "Lanche"
+      "timestamp": ${todayTimestampStart + 12.5 * 60 * 60 * 1000}, // número inteiro em milissegundos
+      "items": [
+        {
+          "foodName": "Arroz branco cozido",
+          "weightGrams": 150,
+          "calories": 195,
+          "protein": 3.75,
+          "carbs": 42.0,
+          "fat": 0.3,
+          "fiber": 2.4,
+          "sodium": 150.0
+        }
+      ]
+    }
+  ]
+}
+`;
+
+  const payload = {
+    contents: [
+      {
+        parts: [
+          { text: promptText },
+          { text: `TEXTO PARA ANÁLISE:\n\n${chatText}` }
+        ]
+      }
+    ],
+    generationConfig: {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: 'OBJECT',
+        properties: {
+          meals: {
+            type: 'ARRAY',
+            items: {
+              type: 'OBJECT',
+              properties: {
+                type: { type: 'STRING', enum: ['Café da Manhã', 'Almoço', 'Jantar', 'Lanche'] },
+                timestamp: { type: 'NUMBER' },
+                items: {
+                  type: 'ARRAY',
+                  items: {
+                    type: 'OBJECT',
+                    properties: {
+                      foodName: { type: 'STRING' },
+                      weightGrams: { type: 'NUMBER' },
+                      calories: { type: 'NUMBER' },
+                      protein: { type: 'NUMBER' },
+                      carbs: { type: 'NUMBER' },
+                      fat: { type: 'NUMBER' },
+                      fiber: { type: 'NUMBER' },
+                      sodium: { type: 'NUMBER' }
+                    },
+                    required: ['foodName', 'weightGrams', 'calories', 'protein', 'carbs', 'fat', 'fiber', 'sodium']
+                  }
+                }
+              },
+              required: ['type', 'timestamp', 'items']
+            }
+          }
+        },
+        required: ['meals']
+      }
+    }
+  };
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      await handleGeminiError(response);
+    }
+
+    const data = await response.json();
+    const textResponse = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+    if (!textResponse) {
+      throw new Error('Resposta vazia da IA na extração de refeições.');
+    }
+
+    return safeParseGeminiJson<ExtractedMealsResult>(textResponse);
+  } catch (error) {
+    logger.error('Erro ao extrair refeições do histórico do chat', error);
+    throw error;
+  }
+}
+

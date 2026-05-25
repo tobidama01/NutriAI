@@ -22,7 +22,8 @@ export const Settings: React.FC<SettingsProps> = ({
     weight,
     height,
     saveSettings,
-    handleClearData
+    handleClearData,
+    handleImportMealsFromText
   } = useApp();
 
   const [localKey, setLocalKey] = useState(apiKey);
@@ -249,13 +250,30 @@ export const Settings: React.FC<SettingsProps> = ({
 
       try {
         await saveChatHistory(finalChat);
-        setImportStatus(`Sucesso! ${parsedMessages.length} mensagens importadas.`);
-        setPastedChat('');
+        setImportStatus('Histórico importado! Analisando refeições de hoje no texto...');
         
-        setAlertConfig({
-          title: 'Histórico Importado',
-          message: 'O histórico foi mesclado com sucesso. Vá na aba de Chat para prosseguir.'
-        });
+        let mealsImportedCount = 0;
+        try {
+          mealsImportedCount = await handleImportMealsFromText(rawInput);
+        } catch (mealsErr) {
+          console.error('Erro ao extrair refeições do histórico do chat', mealsErr);
+        }
+
+        if (mealsImportedCount > 0) {
+          setImportStatus(`Sucesso! Chat importado e ${mealsImportedCount} refeição(ões) de hoje cadastrada(s) automaticamente.`);
+          setAlertConfig({
+            title: 'Chat e Macros Sincronizados',
+            message: `O histórico foi importado com sucesso! Além disso, a Nutri IA identificou ${mealsImportedCount} refeição(ões) de hoje no texto e atualizou seus macros consumidos no Dashboard automaticamente.`
+          });
+        } else {
+          setImportStatus(`Sucesso! ${parsedMessages.length} mensagens importadas.`);
+          setAlertConfig({
+            title: 'Histórico Importado',
+            message: 'O histórico foi importado com sucesso. Nenhuma refeição consumida hoje foi identificada no texto para atualizar os macros.'
+          });
+        }
+        
+        setPastedChat('');
         setIsAlertModalOpen(true);
       } catch (err) {
         setImportStatus('Falha ao gravar mensagens importadas no IndexedDB.');
