@@ -1,6 +1,16 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
-import type { Meal, NutritionTargets, TabName } from '../types';
-import { getMeals, getSettingsFromDB, saveSettingsToDB, saveMeal, deleteMealFromDB, clearAllDBData } from '../services/db';
+import type { Meal, NutritionTargets, TabName, Workout } from '../types';
+import { 
+  getMeals, 
+  getSettingsFromDB, 
+  saveSettingsToDB, 
+  saveMeal, 
+  deleteMealFromDB, 
+  clearAllDBData,
+  getWorkouts,
+  saveWorkout,
+  deleteWorkoutFromDB
+} from '../services/db';
 import { logger } from '../utils/logger';
 
 interface AppContextValue {
@@ -13,19 +23,25 @@ interface AppContextValue {
   targets: NutritionTargets;
   setTargets: (t: NutritionTargets) => void;
   meals: Meal[];
+  workouts: Workout[];
+  weight: number;
+  setWeight: (w: number) => void;
+  height: number;
+  setHeight: (h: number) => void;
   isLoading: boolean;
   activeTab: TabName;
   setActiveTab: (tab: TabName) => void;
   handleSaveMeal: (mealType: string, items: Meal['items']) => Promise<void>;
   handleDeleteMeal: (id: string) => Promise<void>;
+  handleSaveWorkout: (workoutNotes: string, cardioNotes: string, caloriesWorkout: number, caloriesCardio: number, totalExpenditure: number, explanation: string) => Promise<void>;
+  handleDeleteWorkout: (id: string) => Promise<void>;
   handleClearData: () => Promise<void>;
-  saveSettings: (key: string, model: string, context: string, targets: NutritionTargets) => Promise<void>;
+  saveSettings: (key: string, model: string, context: string, targets: NutritionTargets, weight: number, height: number) => Promise<void>;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  // Inicialização de aba ativa a partir do sessionStorage (item 3.7)
   const savedTab = sessionStorage.getItem('nutri_active_tab') as TabName | null;
   const [activeTab, setActiveTab] = useState<TabName>(savedTab || 'dashboard');
   
@@ -37,10 +53,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     carbs: 200,
     protein: 120,
     fat: 60,
-    fiber: 25,    // default de fibra (item 3.10)
-    sodium: 2000  // default de sódio (item 3.10)
+    fiber: 25,
+    sodium: 2000
   });
+  
+  // Dados de peso e altura (item 4.1)
+  const [weight, setWeight] = useState<number>(75);
+  const [height, setHeight] = useState<number>(175);
+  
   const [meals, setMeals] = useState<Meal[]>([]);
+  const [workouts, setWorkouts] = useState<Workout[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
   const setActiveTabPersisted = (tab: TabName) => {
@@ -48,15 +70,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
     sessionStorage.setItem('nutri_active_tab', tab);
   };
 
-  // Carrega os dados salvos do IndexedDB ao iniciar o app (com fallback para localStorage legado)
+  // Carrega os dados salvos do IndexedDB ao iniciar o app (com fallback para localStorage)
   useEffect(() => {
     async function loadData() {
       try {
         const dbSettings = await getSettingsFromDB();
+        let currentWeight = 75;
+        let currentHeight = 175;
+        
         if (dbSettings) {
           setApiKey(dbSettings.apiKey || '');
           setModelName(dbSettings.modelName || 'gemini-2.0-flash');
           setCustomContext(dbSettings.customContext || '');
+          currentWeight = dbSettings.weight ?? 75;
+          currentHeight = dbSettings.height ?? 175;
+          setWeight(currentWeight);
+          setHeight(currentHeight);
+          
           if (dbSettings.targets) {
             setTargets({
               calories: dbSettings.targets.calories ?? 2000,
@@ -68,11 +98,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
             });
           }
         } else {
-          // Fallback para localStorage legado no primeiro acesso (removendo API Key de localStorage por segurança - item 4.1)
+          // Fallback para localStorage legado no primeiro acesso
           const savedKey = localStorage.getItem('nutri_api_key') || '';
           const savedModel = localStorage.getItem('nutri_model_name') || 'gemini-2.0-flash';
           const savedContext = localStorage.getItem('nutri_custom_context') || '';
           const savedTargets = localStorage.getItem('nutri_targets');
+          const savedWeight = localStorage.getItem('nutri_weight');
+          const savedHeight = localStorage.getItem('nutri_height');
+
+          if (savedWeight) {
+            currentWeight = parseFloat(savedWeight) || 75;
+            setWeight(currentWeight);
+          }
+          if (savedHeight) {
+            currentHeight = parseFloat(savedHeight) || 175;
+            setHeight(currentHeight);
+          }
 
           let loadedTargets = { calories: 2000, carbs: 200, protein: 120, fat: 60, fiber: 25, sodium: 2000 };
 
@@ -96,18 +137,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
             }
           }
 
-          // Salva imediatamente no IndexedDB para migração segura
+          // Salva no IndexedDB para migração segura
           await saveSettingsToDB({
             apiKey: savedKey,
             modelName: savedModel,
             customContext: savedContext,
-            targets: loadedTargets
+            targets: loadedTargets,
+            weight: currentWeight,
+            height: currentHeight
           });
 
-          // Remove chave da API do localStorage por motivos de segurança (item 4.1)
+          // Remove chave da API do localStorage por motivos de segurança
           localStorage.removeItem('nutri_api_key');
         }
 
+        // Carrega refeições
         const dbMeals = await getMeals();
         if (dbMeals && dbMeals.length > 0) {
           setMeals(dbMeals);
@@ -126,6 +170,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
             }
           }
         }
+
+        // Carrega treinos (workouts)
+        const dbWorkouts = await getWorkouts();
+        if (dbWorkouts && dbWorkouts.length > 0) {
+          setWorkouts(dbWorkouts);
+        }
       } catch (err) {
         logger.error('Erro no carregamento inicial do banco IndexedDB', err);
       } finally {
@@ -137,7 +187,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const handleSaveMeal = async (mealType: string, items: Meal['items']) => {
     const newMeal: Meal = {
-      id: crypto.randomUUID(), // Corrigido IDs duplicados usando UUID
+      id: crypto.randomUUID(),
       timestamp: Date.now(),
       type: mealType as any,
       items: items,
@@ -165,6 +215,50 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  // Operações de Treinos
+  const handleSaveWorkout = async (
+    workoutNotes: string,
+    cardioNotes: string,
+    caloriesWorkout: number,
+    caloriesCardio: number,
+    totalExpenditure: number,
+    explanation: string
+  ) => {
+    const newWorkout: Workout = {
+      id: crypto.randomUUID(),
+      timestamp: Date.now(),
+      weightKg: weight,
+      heightCm: height,
+      workoutNotes,
+      cardioNotes,
+      caloriesBurnedWorkout: caloriesWorkout,
+      caloriesBurnedCardio: caloriesCardio,
+      totalDailyExpenditure: totalExpenditure,
+      iaExplanation: explanation
+    };
+
+    const updatedWorkouts = [newWorkout, ...workouts];
+    setWorkouts(updatedWorkouts);
+
+    try {
+      await saveWorkout(newWorkout);
+    } catch (e) {
+      logger.error('Erro ao salvar treino no IndexedDB', e);
+      throw e;
+    }
+  };
+
+  const handleDeleteWorkout = async (id: string) => {
+    const updatedWorkouts = workouts.filter(w => w.id !== id);
+    setWorkouts(updatedWorkouts);
+    try {
+      await deleteWorkoutFromDB(id);
+    } catch (e) {
+      logger.error('Erro ao deletar treino no IndexedDB', e);
+      throw e;
+    }
+  };
+
   const handleClearData = async () => {
     try {
       await clearAllDBData();
@@ -176,6 +270,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setApiKey('');
     setModelName('gemini-2.0-flash');
     setCustomContext('');
+    setWeight(75);
+    setHeight(175);
     setTargets({
       calories: 2000,
       carbs: 200,
@@ -185,6 +281,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       sodium: 2000
     });
     setMeals([]);
+    setWorkouts([]);
     setActiveTabPersisted('dashboard');
   };
 
@@ -192,12 +289,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     key: string,
     model: string,
     context: string,
-    newTargets: NutritionTargets
+    newTargets: NutritionTargets,
+    newWeight: number,
+    newHeight: number
   ) => {
     setApiKey(key);
     setModelName(model);
     setCustomContext(context);
     setTargets(newTargets);
+    setWeight(newWeight);
+    setHeight(newHeight);
 
     try {
       await saveSettingsToDB({
@@ -211,17 +312,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
           fat: newTargets.fat,
           fiber: newTargets.fiber ?? 25,
           sodium: newTargets.sodium ?? 2000
-        }
+        },
+        weight: newWeight,
+        height: newHeight
       });
     } catch (err) {
       logger.error('Erro ao salvar configurações no IndexedDB', err);
       throw err;
     }
 
-    // Mantém itens secundários em localStorage, mas NUNCA a API key (item 4.1)
     localStorage.setItem('nutri_model_name', model);
     localStorage.setItem('nutri_custom_context', context);
     localStorage.setItem('nutri_targets', JSON.stringify(newTargets));
+    localStorage.setItem('nutri_weight', newWeight.toString());
+    localStorage.setItem('nutri_height', newHeight.toString());
   };
 
   return (
@@ -236,11 +340,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
         targets,
         setTargets,
         meals,
+        workouts,
+        weight,
+        setWeight,
+        height,
+        setHeight,
         isLoading,
         activeTab,
         setActiveTab: setActiveTabPersisted,
         handleSaveMeal,
         handleDeleteMeal,
+        handleSaveWorkout,
+        handleDeleteWorkout,
         handleClearData,
         saveSettings
       }}

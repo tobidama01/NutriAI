@@ -1,10 +1,11 @@
 import { useApp } from './context/AppContext';
-import { Home, Camera, CalendarRange, Settings as SettingsIcon, MessageSquare, Loader2 } from 'lucide-react';
+import { Home, Camera, CalendarRange, Settings as SettingsIcon, MessageSquare, Loader2, Dumbbell } from 'lucide-react';
 import { Dashboard } from './components/Dashboard';
 import { MealCreator } from './components/MealCreator';
 import { MealHistory } from './components/MealHistory';
 import { Settings } from './components/Settings';
 import { Chat } from './components/Chat';
+import { WorkoutCalculator } from './components/WorkoutCalculator';
 import { Toast } from './components/ui/Toast';
 import { useState } from 'react';
 
@@ -42,6 +43,8 @@ function App() {
             onCancel={() => setActiveTab('dashboard')}
           />
         );
+      case 'workout':
+        return <WorkoutCalculator />;
       case 'chat':
         return <Chat />;
       case 'history':
@@ -117,6 +120,17 @@ function App() {
             <Camera size={20} aria-hidden="true" />
           </div>
           Câmera
+        </button>
+
+        <button 
+          className={`tab-item ${activeTab === 'workout' ? 'active' : ''}`}
+          onClick={() => setActiveTab('workout')}
+          aria-label="Calcular Gasto Calórico (Treinos)"
+        >
+          <div className="tab-icon-wrapper">
+            <Dumbbell size={20} aria-hidden="true" />
+          </div>
+          Treinos
         </button>
 
         <button 

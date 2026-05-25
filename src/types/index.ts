@@ -20,7 +20,7 @@ export interface Meal {
   items: MealItem[];
 }
 
-export type TabName = 'dashboard' | 'camera' | 'history' | 'settings' | 'chat';
+export type TabName = 'dashboard' | 'camera' | 'workout' | 'chat' | 'history' | 'settings';
 
 export interface NutritionTargets {
   calories: number;
@@ -38,4 +38,17 @@ export interface NutritionTotals {
   fat: number;
   fiber: number;
   sodium: number;
+}
+
+export interface Workout {
+  id: string;
+  timestamp: number;
+  weightKg: number;
+  heightCm: number;
+  workoutNotes: string;
+  cardioNotes: string;
+  caloriesBurnedWorkout: number;
+  caloriesBurnedCardio: number;
+  totalDailyExpenditure: number;
+  iaExplanation: string;
 }

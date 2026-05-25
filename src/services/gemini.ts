@@ -466,3 +466,116 @@ Requisitos da resposta:
     throw error;
   }
 }
+
+export interface WorkoutAnalysisResult {
+  caloriesBurnedWorkout: number;
+  caloriesBurnedCardio: number;
+  totalDailyExpenditure: number;
+  explanation: string;
+}
+
+/**
+ * Envia as notas de treino e cardio do usuário, peso e altura, e calcula os gastos calóricos estimados.
+ */
+export async function calculateWorkoutCalories(
+  apiKey: string,
+  weightKg: number,
+  heightCm: number,
+  workoutNotes: string,
+  cardioNotes: string,
+  modelName: string = 'gemini-2.0-flash'
+): Promise<WorkoutAnalysisResult> {
+  if (!apiKey) {
+    throw new Error('Chave de API do Gemini não configurada.');
+  }
+
+  await checkRateLimit();
+
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
+
+  const promptText = `
+Você é uma inteligência artificial especialista em fisiologia do exercício, educação física e nutrição esportiva.
+O usuário deseja calcular o gasto calórico estimado do seu treino de força e cardio de hoje, além de projetar o seu Gasto Energético Total Diário (GETD).
+
+DADOS BIOMÉTRICOS:
+- Peso corporal: ${weightKg} kg
+- Altura corporal: ${heightCm} cm
+
+INFORMAÇÕES DO TREINO DE FORÇA (ACADEMIA / MUSCULAÇÃO):
+"${workoutNotes || 'Nenhum treino de força realizado hoje.'}"
+
+INFORMAÇÕES DO CARDIO (AERÓBICO):
+"${cardioNotes || 'Nenhum cardio realizado hoje.'}"
+
+Instruções para a sua análise:
+1. ESTIMAR GASTO DO TREINO DE FORÇA: Com base nos exercícios, séries, repetições e pesos relatados, estime o gasto calórico aproximado (kcal) desse treino de força, levando em conta o peso corporal do usuário.
+2. ESTIMAR GASTO DO CARDIO: Estime o gasto calórico (kcal) do cardio com base na atividade, tempo e intensidade informados.
+3. CALCULAR TAXA METABÓLICA BASAL (TMB): Calcule a TMB estimada usando a fórmula de Mifflin-St Jeor (ou Harris-Benedict) assumindo uma idade média padrão de 25-30 anos.
+4. ESTIMAR GASTO ENERGÉTICO TOTAL DIÁRIO (GETD): Some TMB + NEAT (gasto por atividades diárias espontâneas, ex: ~350 kcal) + treino + cardio para gerar o gasto total diário estimado.
+5. RETORNAR EXCLUSIVAMENTE O SCHEMA JSON REQUISITADO.
+
+Responda rigorosamente seguindo o seguinte formato de objeto JSON:
+{
+  "caloriesBurnedWorkout": 280, // número inteiro de kcal gastas no treino de força
+  "caloriesBurnedCardio": 150, // número inteiro de kcal gastas no cardio
+  "totalDailyExpenditure": 2650, // GETD total estimado
+  "explanation": "Explicação concisa em português do cálculo, mencionando a TMB aproximada calculada, o esforço/METs dos treinos e as fórmulas usadas."
+}
+`;
+
+  const payload = {
+    contents: [
+      {
+        parts: [
+          { text: promptText }
+        ]
+      }
+    ],
+    generationConfig: {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: 'OBJECT',
+        properties: {
+          caloriesBurnedWorkout: { type: 'NUMBER' },
+          caloriesBurnedCardio: { type: 'NUMBER' },
+          totalDailyExpenditure: { type: 'NUMBER' },
+          explanation: { type: 'STRING' }
+        },
+        required: [
+          'caloriesBurnedWorkout',
+          'caloriesBurnedCardio',
+          'totalDailyExpenditure',
+          'explanation'
+        ]
+      }
+    }
+  };
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      await handleGeminiError(response);
+    }
+
+    const data = await response.json();
+    const textResponse = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+    if (!textResponse) {
+      throw new Error('Resposta vazia da API do Gemini.');
+    }
+
+    return safeParseGeminiJson<WorkoutAnalysisResult>(textResponse);
+  } catch (error) {
+    logger.error('Erro ao calcular gasto calórico do treino com Gemini', error);
+    throw error;
+  }
+}
+

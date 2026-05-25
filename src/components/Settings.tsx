@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Key, Target, RefreshCw, Trash2, Sparkles, MessageSquare, HelpCircle, AlertCircle } from 'lucide-react';
+import { Key, Target, RefreshCw, Trash2, Sparkles, MessageSquare, HelpCircle, AlertCircle, Scale } from 'lucide-react';
 import type { ChatMessage } from '../services/gemini';
 import { saveChatHistory } from '../services/db';
 import { useApp } from '../context/AppContext';
@@ -19,6 +19,8 @@ export const Settings: React.FC<SettingsProps> = ({
     modelName,
     customContext,
     targets,
+    weight,
+    height,
     saveSettings,
     handleClearData
   } = useApp();
@@ -33,6 +35,9 @@ export const Settings: React.FC<SettingsProps> = ({
   const [fat, setFat] = useState(targets.fat.toString());
   const [fib, setFib] = useState((targets.fiber ?? 25).toString());
   const [sod, setSod] = useState((targets.sodium ?? 2000).toString());
+
+  const [localWeight, setLocalWeight] = useState(weight.toString());
+  const [localHeight, setLocalHeight] = useState(height.toString());
 
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   
@@ -53,6 +58,8 @@ export const Settings: React.FC<SettingsProps> = ({
     const fatNum = parseInt(fat);
     const fiberNum = parseInt(fib);
     const sodiumNum = parseInt(sod);
+    const weightNum = parseFloat(localWeight);
+    const heightNum = parseFloat(localHeight);
 
     if (isNaN(caloriesNum) || caloriesNum < 500 || caloriesNum > 10000) {
       errors.push('Calorias devem estar entre 500 e 10.000 kcal.');
@@ -71,6 +78,12 @@ export const Settings: React.FC<SettingsProps> = ({
     }
     if (isNaN(sodiumNum) || sodiumNum < 100 || sodiumNum > 10000) {
       errors.push('Sódio deve estar entre 100mg e 10.000mg.');
+    }
+    if (isNaN(weightNum) || weightNum < 30 || weightNum > 300) {
+      errors.push('Peso corporal deve estar entre 30 kg e 300 kg.');
+    }
+    if (isNaN(heightNum) || heightNum < 100 || heightNum > 250) {
+      errors.push('Altura deve estar entre 100 cm e 250 cm.');
     }
 
     return errors;
@@ -96,7 +109,14 @@ export const Settings: React.FC<SettingsProps> = ({
     };
 
     try {
-      await saveSettings(localKey, localModel, localContext, newTargets);
+      await saveSettings(
+        localKey,
+        localModel,
+        localContext,
+        newTargets,
+        parseFloat(localWeight) || 75,
+        parseFloat(localHeight) || 175
+      );
       onSaveSuccess();
     } catch (err) {
       setAlertConfig({
@@ -314,7 +334,6 @@ export const Settings: React.FC<SettingsProps> = ({
               className="form-input"
               value={localModel}
               onChange={(e) => setLocalModel(e.target.value)}
-              style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-color)', color: 'white' }}
             >
               <option value="gemini-2.0-flash">Gemini 2.0 Flash (Rápido - Recomendado)</option>
               <option value="gemini-2.0-flash-thinking-exp">Gemini 2.0 Flash Thinking (Raciocínio)</option>
@@ -404,6 +423,40 @@ export const Settings: React.FC<SettingsProps> = ({
               {importStatus}
             </span>
           )}
+        </div>
+
+        {/* Physiological Profile Card */}
+        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Scale size={20} className="tab-icon-wrapper" style={{ color: 'var(--accent-light)' }} />
+            <h2 style={{ fontSize: '17px' }}>Perfil Fisiológico</h2>
+          </div>
+          <p style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+            Usado pela IA para estimar a Taxa Metabólica Basal e o gasto calórico dos treinos.
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+            <div className="form-group">
+              <label className="form-label" htmlFor="user-weight">Peso Corporal (kg)</label>
+              <input
+                id="user-weight"
+                type="number"
+                step="0.1"
+                className="form-input"
+                value={localWeight}
+                onChange={(e) => setLocalWeight(e.target.value)}
+              />
+            </div>
+            <div className="form-group">
+              <label className="form-label" htmlFor="user-height">Altura (cm)</label>
+              <input
+                id="user-height"
+                type="number"
+                className="form-input"
+                value={localHeight}
+                onChange={(e) => setLocalHeight(e.target.value)}
+              />
+            </div>
+          </div>
         </div>
 
         {/* Nutritional Targets Card */}

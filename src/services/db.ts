@@ -1,8 +1,8 @@
 // IndexedDB database manager for NutriScale AI
-import type { Meal } from '../types';
+import type { Meal, Workout } from '../types';
 
 const DB_NAME = 'nutriscale_db';
-const DB_VERSION = 2; // Incrementado de 1 para 2 para suportar o index de timestamp
+const DB_VERSION = 3; // Incrementado de 2 para 3 para suportar a store de workouts (treinos)
 
 export interface DBChatMessage {
   id: string;
@@ -23,6 +23,8 @@ export interface DBSettings {
     fiber?: number;
     sodium?: number;
   };
+  weight?: number;  // Salvo para cálculo de gasto calórico (item 4.1)
+  height?: number;  // Salvo para cálculo de gasto calórico (item 4.1)
 }
 
 let dbInstance: IDBDatabase | null = null;
@@ -79,6 +81,13 @@ export function openDB(): Promise<IDBDatabase> {
           mealsStore.createIndex('timestamp', 'timestamp', { unique: false });
         }
       }
+
+      // Versão 3: Adiciona a tabela de treinos (workouts)
+      if (oldVersion < 3) {
+        if (!db.objectStoreNames.contains('workouts')) {
+          db.createObjectStore('workouts', { keyPath: 'id' });
+        }
+      }
     };
   });
 }
@@ -89,7 +98,7 @@ export async function saveMeal(meal: Meal): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const transaction = db.transaction('meals', 'readwrite');
-    const store = transaction.objectStore('meals'); // Corrigido bug de objectStoreNames[0]
+    const store = transaction.objectStore('meals');
     const request = store.put(meal);
     
     request.onsuccess = () => resolve();
@@ -105,7 +114,6 @@ export async function getMeals(): Promise<Meal[]> {
     const request = store.getAll();
     
     request.onsuccess = () => {
-      // Ordena por timestamp desc (mais recentes primeiro)
       const meals = request.result as Meal[];
       resolve(meals.sort((a, b) => b.timestamp - a.timestamp));
     };
@@ -130,7 +138,6 @@ export async function getMealsByDateRange(
     
     request.onsuccess = () => {
       const meals = request.result as Meal[];
-      // Ordena decrescente
       resolve(meals.sort((a, b) => b.timestamp - a.timestamp));
     };
     request.onerror = () => reject(request.error);
@@ -165,7 +172,6 @@ export async function saveChatHistory(history: DBChatMessage[]): Promise<void> {
     const transaction = db.transaction('chat_history', 'readwrite');
     const store = transaction.objectStore('chat_history');
     
-    // Corrigido bug de race condition usando transaction.oncomplete
     transaction.oncomplete = () => resolve();
     transaction.onerror = () => reject(transaction.error);
     transaction.onabort = () => reject(transaction.error);
@@ -225,22 +231,63 @@ export async function getSettingsFromDB(): Promise<DBSettings | null> {
   });
 }
 
+// --- Operações de Treinos (Workouts) ---
+
+export async function saveWorkout(workout: Workout): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction('workouts', 'readwrite');
+    const store = transaction.objectStore('workouts');
+    const request = store.put(workout);
+    
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export async function getWorkouts(): Promise<Workout[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction('workouts', 'readonly');
+    const store = transaction.objectStore('workouts');
+    const request = store.getAll();
+    
+    request.onsuccess = () => {
+      const workouts = request.result as Workout[];
+      resolve(workouts.sort((a, b) => b.timestamp - a.timestamp));
+    };
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export async function deleteWorkoutFromDB(id: string): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction('workouts', 'readwrite');
+    const store = transaction.objectStore('workouts');
+    const request = store.delete(id);
+    
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+}
+
 // --- Reset Global ---
 
 export async function clearAllDBData(): Promise<void> {
-  // Fecha conexão singleton ativa antes de deletar/limpar
   closeDB();
   
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction(['meals', 'chat_history', 'settings'], 'readwrite');
+    const stores = ['meals', 'chat_history', 'settings', 'workouts'].filter(name => db.objectStoreNames.contains(name));
+    const transaction = db.transaction(stores, 'readwrite');
     
-    transaction.objectStore('meals').clear();
-    transaction.objectStore('chat_history').clear();
-    transaction.objectStore('settings').clear();
+    stores.forEach(name => {
+      transaction.objectStore(name).clear();
+    });
     
     transaction.oncomplete = () => {
-      closeDB(); // Fecha novamente para garantir reabertura limpa
+      closeDB();
       resolve();
     };
     transaction.onerror = () => reject(transaction.error);

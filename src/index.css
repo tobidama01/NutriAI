@@ -128,11 +128,11 @@ html {
   color: var(--text-secondary);
   background: none;
   border: none;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 500;
   gap: 4px;
   cursor: pointer;
-  width: 25%;
+  width: 16.6%;
   height: 50px;
   transition: color 0.2s ease, transform 0.1s ease;
 }
@@ -288,6 +288,18 @@ h3 {
 .form-input:focus {
   border-color: var(--accent-light);
   box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+select.form-input {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2310B981' stroke-width='2.5'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 16px center;
+  background-size: 16px;
+  padding-right: 44px;
+  cursor: pointer;
 }
 
 /* Circular Dashboard Progress Ring */
