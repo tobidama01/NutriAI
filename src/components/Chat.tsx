@@ -1,0 +1,287 @@
+import React, { useState, useRef, useEffect } from 'react';
+import { Send, Bot, Trash2, Loader2 } from 'lucide-react';
+import { chatWithNutritionist } from '../services/gemini';
+import type { ChatMessage } from '../services/gemini';
+import { getChatHistory, saveChatHistory } from '../services/db';
+
+interface MealItem {
+  foodName: string;
+  weightGrams: number;
+  calories: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+}
+
+interface Meal {
+  id: string;
+  timestamp: number;
+  type: string;
+  items: MealItem[];
+}
+
+interface ChatProps {
+  apiKey: string;
+  modelName: string;
+  meals: Meal[];
+  targets: {
+    calories: number;
+    carbs: number;
+    protein: number;
+    fat: number;
+  };
+  customContext: string;
+}
+
+export const Chat: React.FC<ChatProps> = ({
+  apiKey,
+  modelName,
+  meals,
+  targets,
+  customContext,
+}) => {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState('');
+  const [isSending, setIsSending] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Carrega mensagens do IndexedDB ao iniciar
+  useEffect(() => {
+    async function loadChat() {
+      try {
+        const dbHistory = await getChatHistory();
+        if (dbHistory && dbHistory.length > 0) {
+          setMessages(dbHistory);
+        } else {
+          // Mensagem inicial de boas-vindas se não houver dados
+          const welcomeMsg: ChatMessage = {
+            id: 'welcome',
+            sender: 'ai',
+            text: 'Olá! Sou o seu Nutricionista IA. Tenho acesso ao seu diário de refeições e metas cadastradas neste aplicativo. Pode me fazer perguntas sobre o seu dia, pedir conselhos de receitas ou tirar dúvidas sobre o seu consumo!',
+            timestamp: Date.now(),
+          };
+          setMessages([welcomeMsg]);
+          await saveChatHistory([welcomeMsg]);
+        }
+      } catch (e) {
+        console.error('Erro ao ler histórico de chat do IndexedDB:', e);
+      }
+    }
+    loadChat();
+  }, []);
+
+  // Rola até o final sempre que novas mensagens chegam
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, isSending]);
+
+  const handleSend = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!input.trim() || isSending) return;
+
+    if (!apiKey) {
+      alert('Por favor, configure sua chave de API nas Configurações antes de conversar.');
+      return;
+    }
+
+    const userText = input.trim();
+    setInput('');
+    
+    const newUserMsg: ChatMessage = {
+      id: Date.now().toString(),
+      sender: 'user',
+      text: userText,
+      timestamp: Date.now(),
+    };
+
+    const updatedMessages = [...messages, newUserMsg];
+    setMessages(updatedMessages);
+    
+    try {
+      await saveChatHistory(updatedMessages);
+    } catch (err) {
+      console.error('Erro ao salvar mensagem no IndexedDB:', err);
+    }
+
+    setIsSending(true);
+
+    try {
+      // Chama o Gemini para responder
+      const reply = await chatWithNutritionist(
+        apiKey,
+        userText,
+        messages,
+        meals,
+        targets,
+        customContext,
+        modelName
+      );
+
+      const newAiMsg: ChatMessage = {
+        id: (Date.now() + 1).toString(),
+        sender: 'ai',
+        text: reply,
+        timestamp: Date.now(),
+      };
+
+      const finalMessages = [...updatedMessages, newAiMsg];
+      setMessages(finalMessages);
+      await saveChatHistory(finalMessages);
+    } catch (error: any) {
+      const errorMsg: ChatMessage = {
+        id: (Date.now() + 1).toString(),
+        sender: 'ai',
+        text: `Erro ao conectar com o Gemini: ${error.message || 'Erro desconhecido. Verifique sua chave de API e internet.'}`,
+        timestamp: Date.now(),
+      };
+      const finalMessages = [...updatedMessages, errorMsg];
+      setMessages(finalMessages);
+      await saveChatHistory(finalMessages);
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  const handleClearChat = async () => {
+    if (confirm('Deseja limpar todo o histórico desta conversa?')) {
+      const welcomeMsg: ChatMessage = {
+        id: 'welcome',
+        sender: 'ai',
+        text: 'Histórico limpo! Como posso ajudar você com a sua nutrição hoje?',
+        timestamp: Date.now(),
+      };
+      setMessages([welcomeMsg]);
+      try {
+        await saveChatHistory([welcomeMsg]);
+      } catch (err) {
+        console.error('Erro ao limpar chat no IndexedDB:', err);
+      }
+    }
+  };
+
+  return (
+    <div className="fade-in" style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - var(--tabbar-height) - var(--safe-area-top) - 24px)' }}>
+      {/* Chat Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingBottom: '12px', borderBottom: '1px solid var(--border-color)', flexShrink: 0 }}>
+        <div>
+          <h1 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Bot size={24} style={{ color: 'var(--accent-light)' }} /> Nutri IA
+          </h1>
+          <h3 style={{ marginTop: '2px' }}>Tire dúvidas sobre seu dia</h3>
+        </div>
+        <button 
+          onClick={handleClearChat}
+          style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', padding: '6px' }}
+          title="Limpar Conversa"
+        >
+          <Trash2 size={18} />
+        </button>
+      </div>
+
+      {/* Messages Window */}
+      <div 
+        style={{ 
+          flex: 1, 
+          overflowY: 'auto', 
+          padding: '16px 0', 
+          display: 'flex', 
+          flexDirection: 'column', 
+          gap: '12px' 
+        }}
+      >
+        {messages.map(msg => (
+          <div 
+            key={msg.id}
+            style={{
+              display: 'flex',
+              justifyContent: msg.sender === 'user' ? 'flex-end' : 'flex-start',
+              width: '100%',
+            }}
+          >
+            <div
+              style={{
+                maxWidth: '80%',
+                padding: '12px 16px',
+                borderRadius: msg.sender === 'user' ? '18px 18px 2px 18px' : '18px 18px 18px 2px',
+                backgroundColor: msg.sender === 'user' ? 'var(--accent)' : 'var(--bg-card)',
+                border: msg.sender === 'user' ? 'none' : '1px solid var(--border-color)',
+                color: 'white',
+                fontSize: '14px',
+                lineHeight: '1.4',
+                whiteSpace: 'pre-wrap',
+                userSelect: 'text',
+                boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+              }}
+            >
+              {msg.text}
+            </div>
+          </div>
+        ))}
+        {isSending && (
+          <div style={{ display: 'flex', justifyContent: 'flex-start', width: '100%' }}>
+            <div
+              style={{
+                padding: '12px 16px',
+                borderRadius: '18px 18px 18px 2px',
+                backgroundColor: 'var(--bg-card)',
+                border: '1px solid var(--border-color)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                color: 'var(--text-secondary)',
+                fontSize: '13px',
+              }}
+            >
+              <Loader2 size={14} style={{ animation: 'spin 1.5s linear infinite' }} />
+              Nutri está pensando...
+            </div>
+          </div>
+        )}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* Input Form Box */}
+      <form 
+        onSubmit={handleSend}
+        style={{ 
+          display: 'flex', 
+          gap: '8px', 
+          padding: '10px 0', 
+          borderTop: '1px solid var(--border-color)',
+          flexShrink: 0
+        }}
+      >
+        <input
+          type="text"
+          className="form-input"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Ex: Quantas kcal comi hoje? Faltam quantos g de proteína?"
+          style={{ flex: 1, padding: '12px 16px', fontSize: '14px', borderRadius: '24px', userSelect: 'text' }}
+          disabled={isSending}
+        />
+        <button 
+          type="submit" 
+          className="btn" 
+          style={{ 
+            width: '42px', 
+            height: '42px', 
+            borderRadius: '50%', 
+            padding: 0, 
+            display: 'flex', 
+            alignItems: 'center', 
+            justifyContent: 'center',
+            flexShrink: 0,
+            backgroundColor: input.trim() ? 'var(--accent)' : 'var(--bg-card)',
+            color: input.trim() ? 'white' : 'var(--text-muted)',
+            boxShadow: 'none',
+            border: input.trim() ? 'none' : '1px solid var(--border-color)',
+          }}
+          disabled={!input.trim() || isSending}
+        >
+          <Send size={18} />
+        </button>
+      </form>
+    </div>
+  );
+};
