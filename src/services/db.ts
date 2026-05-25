@@ -1,23 +1,8 @@
 // IndexedDB database manager for NutriScale AI
+import type { Meal } from '../types';
 
 const DB_NAME = 'nutriscale_db';
-const DB_VERSION = 1;
-
-export interface DBMealItem {
-  foodName: string;
-  weightGrams: number;
-  calories: number;
-  protein: number;
-  carbs: number;
-  fat: number;
-}
-
-export interface DBMeal {
-  id: string;
-  timestamp: number;
-  type: string;
-  items: DBMealItem[];
-}
+const DB_VERSION = 2; // Incrementado de 1 para 2 para suportar o index de timestamp
 
 export interface DBChatMessage {
   id: string;
@@ -35,35 +20,64 @@ export interface DBSettings {
     carbs: number;
     protein: number;
     fat: number;
+    fiber?: number;
+    sodium?: number;
   };
 }
 
+let dbInstance: IDBDatabase | null = null;
+
 /**
- * Abre a conexão com o banco de dados IndexedDB.
+ * Fecha a conexão ativa do singleton com o IndexedDB.
  */
-function openDB(): Promise<IDBDatabase> {
+export function closeDB(): void {
+  if (dbInstance) {
+    dbInstance.close();
+    dbInstance = null;
+  }
+}
+
+/**
+ * Abre a conexão com o banco de dados IndexedDB de forma segura com Singleton.
+ */
+export function openDB(): Promise<IDBDatabase> {
+  if (dbInstance) return Promise.resolve(dbInstance);
+
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
 
     request.onerror = () => reject(request.error);
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      dbInstance = request.result;
+      dbInstance.onclose = () => {
+        dbInstance = null;
+      };
+      resolve(dbInstance);
+    };
 
-    request.onupgradeneeded = () => {
+    request.onupgradeneeded = (event) => {
       const db = request.result;
+      const oldVersion = event.oldVersion;
       
-      // Store de Refeições
-      if (!db.objectStoreNames.contains('meals')) {
-        db.createObjectStore('meals', { keyPath: 'id' });
+      // Versão 1: Inicialização básica
+      if (oldVersion < 1) {
+        if (!db.objectStoreNames.contains('meals')) {
+          db.createObjectStore('meals', { keyPath: 'id' });
+        }
+        if (!db.objectStoreNames.contains('chat_history')) {
+          db.createObjectStore('chat_history', { keyPath: 'id' });
+        }
+        if (!db.objectStoreNames.contains('settings')) {
+          db.createObjectStore('settings', { keyPath: 'key' });
+        }
       }
       
-      // Store de Chat
-      if (!db.objectStoreNames.contains('chat_history')) {
-        db.createObjectStore('chat_history', { keyPath: 'id' });
-      }
-      
-      // Store de Configurações
-      if (!db.objectStoreNames.contains('settings')) {
-        db.createObjectStore('settings', { keyPath: 'key' });
+      // Versão 2: Adiciona o índice 'timestamp' para a tabela meals
+      if (oldVersion < 2) {
+        const mealsStore = request.transaction!.objectStore('meals');
+        if (!mealsStore.indexNames.contains('timestamp')) {
+          mealsStore.createIndex('timestamp', 'timestamp', { unique: false });
+        }
       }
     };
   });
@@ -71,11 +85,11 @@ function openDB(): Promise<IDBDatabase> {
 
 // --- Operações de Refeições ---
 
-export async function saveMeal(meal: DBMeal): Promise<void> {
+export async function saveMeal(meal: Meal): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const transaction = db.transaction('meals', 'readwrite');
-    const store = transaction.objectStore(transaction.objectStoreNames[0] || 'meals');
+    const store = transaction.objectStore('meals'); // Corrigido bug de objectStoreNames[0]
     const request = store.put(meal);
     
     request.onsuccess = () => resolve();
@@ -83,7 +97,7 @@ export async function saveMeal(meal: DBMeal): Promise<void> {
   });
 }
 
-export async function getMeals(): Promise<DBMeal[]> {
+export async function getMeals(): Promise<Meal[]> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const transaction = db.transaction('meals', 'readonly');
@@ -92,11 +106,43 @@ export async function getMeals(): Promise<DBMeal[]> {
     
     request.onsuccess = () => {
       // Ordena por timestamp desc (mais recentes primeiro)
-      const meals = request.result as DBMeal[];
+      const meals = request.result as Meal[];
       resolve(meals.sort((a, b) => b.timestamp - a.timestamp));
     };
     request.onerror = () => reject(request.error);
   });
+}
+
+/**
+ * Consulta refeições dentro de um período específico utilizando o index de timestamp (altamente performático).
+ */
+export async function getMealsByDateRange(
+  startTimestamp: number,
+  endTimestamp: number
+): Promise<Meal[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction('meals', 'readonly');
+    const store = transaction.objectStore('meals');
+    const index = store.index('timestamp');
+    const range = IDBKeyRange.bound(startTimestamp, endTimestamp);
+    const request = index.getAll(range);
+    
+    request.onsuccess = () => {
+      const meals = request.result as Meal[];
+      // Ordena decrescente
+      resolve(meals.sort((a, b) => b.timestamp - a.timestamp));
+    };
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/**
+ * Retorna as refeições mais recentes (padrão 30 dias) para economizar memória em mobile.
+ */
+export async function getRecentMeals(days: number = 30): Promise<Meal[]> {
+  const startTimestamp = Date.now() - (days * 24 * 60 * 60 * 1000);
+  return getMealsByDateRange(startTimestamp, Date.now());
 }
 
 export async function deleteMealFromDB(id: string): Promise<void> {
@@ -119,28 +165,15 @@ export async function saveChatHistory(history: DBChatMessage[]): Promise<void> {
     const transaction = db.transaction('chat_history', 'readwrite');
     const store = transaction.objectStore('chat_history');
     
-    // Limpa o store antigo antes de salvar a nova lista completa
-    const clearRequest = store.clear();
+    // Corrigido bug de race condition usando transaction.oncomplete
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error);
     
-    clearRequest.onsuccess = () => {
-      let count = 0;
-      if (history.length === 0) {
-        resolve();
-        return;
-      }
-      
-      for (const msg of history) {
-        const req = store.put(msg);
-        req.onsuccess = () => {
-          count++;
-          if (count === history.length) {
-            resolve();
-          }
-        };
-        req.onerror = () => reject(req.error);
-      }
-    };
-    clearRequest.onerror = () => reject(clearRequest.error);
+    store.clear();
+    for (const msg of history) {
+      store.put(msg);
+    }
   });
 }
 
@@ -195,6 +228,9 @@ export async function getSettingsFromDB(): Promise<DBSettings | null> {
 // --- Reset Global ---
 
 export async function clearAllDBData(): Promise<void> {
+  // Fecha conexão singleton ativa antes de deletar/limpar
+  closeDB();
+  
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const transaction = db.transaction(['meals', 'chat_history', 'settings'], 'readwrite');
@@ -203,7 +239,10 @@ export async function clearAllDBData(): Promise<void> {
     transaction.objectStore('chat_history').clear();
     transaction.objectStore('settings').clear();
     
-    transaction.oncomplete = () => resolve();
+    transaction.oncomplete = () => {
+      closeDB(); // Fecha novamente para garantir reabertura limpa
+      resolve();
+    };
     transaction.onerror = () => reject(transaction.error);
   });
 }

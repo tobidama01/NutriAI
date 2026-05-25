@@ -1,15 +1,12 @@
-const CACHE_NAME = 'nutriscale-cache-v1';
+const CACHE_NAME = 'nutriscale-cache-v2';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
   '/manifest.json',
-  '/favicon.svg',
-  '/src/main.tsx',
-  '/src/App.tsx',
-  '/src/index.css'
+  '/favicon.svg'
 ];
 
-// Instalação: Cacheia os arquivos estáticos básicos
+// Instalação: Cacheia os arquivos estáticos básicos de produção
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
@@ -35,38 +32,23 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-// Intercepção de requisições: Network-First com Fallback de Cache
+// Estratégia de cache: Stale-While-Revalidate para assets estáticos
 self.addEventListener('fetch', (event) => {
-  // Ignora requisições de outras origens como a API do Gemini
-  if (!event.request.url.startsWith(self.location.origin)) {
-    return;
-  }
+  if (!event.request.url.startsWith(self.location.origin)) return;
+  if (event.request.method !== 'GET') return;
 
   event.respondWith(
-    fetch(event.request)
-      .then((response) => {
-        // Se a resposta for válida, clona e atualiza o cache
-        if (response.status === 200) {
-          const responseClone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put(event.request, responseClone);
-          });
-        }
-        return response;
-      })
-      .catch(() => {
-        // Se falhar a rede (offline), busca no cache
-        return caches.match(event.request).then((cachedResponse) => {
-          if (cachedResponse) {
-            return cachedResponse;
+    caches.open(CACHE_NAME).then((cache) => {
+      return cache.match(event.request).then((cachedResponse) => {
+        const networkFetch = fetch(event.request).then((networkResponse) => {
+          if (networkResponse.ok) {
+            cache.put(event.request, networkResponse.clone());
           }
-          // Se não estiver no cache, retorna erro de rede padrão
-          return new Response('Offline: Recurso indisponível sem conexão.', {
-            status: 503,
-            statusText: 'Service Unavailable',
-            headers: new Headers({ 'Content-Type': 'text/plain' })
-          });
-        });
-      })
+          return networkResponse;
+        }).catch(() => cachedResponse);
+
+        return cachedResponse || networkFetch;
+      });
+    })
   );
 });

@@ -1,270 +1,310 @@
 import React from 'react';
-import { Sparkles, ArrowRight, Beef, Wheat, Droplets } from 'lucide-react';
-
-interface MealItem {
-  foodName: string;
-  weightGrams: number;
-  calories: number;
-  protein: number;
-  carbs: number;
-  fat: number;
-}
-
-interface Meal {
-  id: string;
-  timestamp: number;
-  type: string; // Café da Manhã, Almoço, Jantar, Lanche
-  items: MealItem[];
-}
+import { Camera, AlertCircle, TrendingUp, Calendar, Zap } from 'lucide-react';
+import { useApp } from '../context/AppContext';
 
 interface DashboardProps {
-  meals: Meal[];
-  targets: {
-    calories: number;
-    carbs: number;
-    protein: number;
-    fat: number;
-  };
   onNavigateToCamera: () => void;
   apiKeyMissing: boolean;
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({
-  meals,
-  targets,
   onNavigateToCamera,
   apiKeyMissing,
 }) => {
-  // Filtra refeições de hoje
+  const { meals, targets } = useApp();
+
+  // Filtra refeições do dia de hoje (meia-noite local até agora)
   const getTodayMeals = () => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    return meals.filter(meal => {
-      const mealDate = new Date(meal.timestamp);
-      mealDate.setHours(0, 0, 0, 0);
-      return mealDate.getTime() === today.getTime();
-    });
+    const startOfToday = today.getTime();
+    
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const endOfToday = tomorrow.getTime();
+
+    return meals.filter(meal => meal.timestamp >= startOfToday && meal.timestamp < endOfToday);
   };
 
   const todayMeals = getTodayMeals();
 
-  // Calcula totais consumidos hoje
-  const consumed = todayMeals.reduce(
-    (acc, meal) => {
-      meal.items.forEach(item => {
-        acc.calories += item.calories;
-        acc.protein += item.protein;
-        acc.carbs += item.carbs;
-        acc.fat += item.fat;
-      });
-      return acc;
-    },
-    { calories: 0, protein: 0, carbs: 0, fat: 0 }
-  );
+  // Totais do dia
+  const totals = todayMeals.reduce((acc, meal) => {
+    meal.items.forEach(item => {
+      acc.calories += item.calories;
+      acc.protein += item.protein;
+      acc.carbs += item.carbs;
+      acc.fat += item.fat;
+      acc.fiber += item.fiber || 0;
+      acc.sodium += item.sodium || 0;
+    });
+    return acc;
+  }, { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0 });
 
-  // Arredonda valores
-  const calories = Math.round(consumed.calories);
-  const protein = Math.round(consumed.protein * 10) / 10;
-  const carbs = Math.round(consumed.carbs * 10) / 10;
-  const fat = Math.round(consumed.fat * 10) / 10;
+  // Valores padrão de metas caso estejam nulos (retrocompatibilidade)
+  const targetFiber = targets.fiber ?? 25;
+  const targetSodium = targets.sodium ?? 2000;
 
-  // Cálculos do anel de progresso
+  // Cálculos do progresso calórico
+  const caloriesPercentage = Math.min(100, Math.round((totals.calories / targets.calories) * 100));
   const radius = 70;
   const stroke = 12;
   const normalizedRadius = radius - stroke * 2;
   const circumference = normalizedRadius * 2 * Math.PI;
-  const percentage = Math.min(100, Math.round((calories / targets.calories) * 100)) || 0;
-  const strokeDashoffset = circumference - (percentage / 100) * circumference;
+  const strokeDashoffset = circumference - (caloriesPercentage / 100) * circumference;
 
-  const remainingKcal = targets.calories - calories;
+  // Lógica para Resumo da Semana (itens 3.5)
+  const getWeeklyStats = () => {
+    const today = new Date();
+    today.setHours(23, 59, 59, 999);
+    const endOfToday = today.getTime();
+    const sevenDaysAgo = new Date(today);
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    sevenDaysAgo.setHours(0, 0, 0, 0);
+    const startOfRange = sevenDaysAgo.getTime();
 
-  // Agrupamento por categorias
-  const categories = [
-    { name: 'Café da Manhã', key: 'Café da Manhã', calories: 0 },
-    { name: 'Almoço', key: 'Almoço', calories: 0 },
-    { name: 'Jantar', key: 'Jantar', calories: 0 },
-    { name: 'Lanches', key: 'Lanche', calories: 0 },
-  ];
+    // Filtra refeições dos últimos 7 dias
+    const weekMeals = meals.filter(m => m.timestamp >= startOfRange && m.timestamp <= endOfToday);
 
-  todayMeals.forEach(meal => {
-    const cat = categories.find(c => c.key === meal.type) || categories[3]; // Lanches como fallback
-    meal.items.forEach(item => {
-      cat.calories += item.calories;
+    // Mapeia totais de calorias agrupando por dia ('YYYY-MM-DD')
+    const caloriesByDay: Record<string, number> = {};
+    
+    // Inicializa a lista de dias para garantir consistência
+    for (let i = 0; i < 7; i++) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const key = d.toISOString().split('T')[0];
+      if (key) {
+        caloriesByDay[key] = 0;
+      }
+    }
+
+    weekMeals.forEach(meal => {
+      const dayKey = new Date(meal.timestamp).toISOString().split('T')[0];
+      if (dayKey in caloriesByDay) {
+        const mealCal = meal.items.reduce((sum, item) => sum + item.calories, 0);
+        caloriesByDay[dayKey] += mealCal;
+      }
     });
-  });
+
+    const dayTotals = Object.values(caloriesByDay);
+    const activeDays = dayTotals.filter(c => c > 0).length;
+    
+    const avgCalories = activeDays > 0 
+      ? Math.round(dayTotals.reduce((a, b) => a + b, 0) / activeDays) 
+      : 0;
+
+    // Dias dentro da meta (+-15% das metas de calorias)
+    const minTarget = targets.calories * 0.85;
+    const maxTarget = targets.calories * 1.15;
+    const daysOnTrack = dayTotals.filter(c => c >= minTarget && c <= maxTarget).length;
+
+    // Cálculo do Streak de dias consecutivos com registro (hoje, ontem, antes de ontem...)
+    let streak = 0;
+    let checkDate = new Date();
+    checkDate.setHours(0, 0, 0, 0);
+
+    while (true) {
+      const checkKey = checkDate.toISOString().split('T')[0];
+      // Verifica se houve refeições nesse dia
+      const hasMeals = meals.some(m => {
+        const mealKey = new Date(m.timestamp).toISOString().split('T')[0];
+        return mealKey === checkKey;
+      });
+
+      if (hasMeals) {
+        streak++;
+        // Retrocede um dia
+        checkDate.setDate(checkDate.getDate() - 1);
+      } else {
+        // Se for hoje e não tiver registro ainda, podemos verificar ontem para não quebrar a corrente imediatamente
+        const isToday = checkDate.toISOString().split('T')[0] === new Date().toISOString().split('T')[0];
+        if (isToday) {
+          checkDate.setDate(checkDate.getDate() - 1);
+          const yesterdayKey = checkDate.toISOString().split('T')[0];
+          const hasMealsYesterday = meals.some(m => {
+            const mealKey = new Date(m.timestamp).toISOString().split('T')[0];
+            return mealKey === yesterdayKey;
+          });
+          if (hasMealsYesterday) {
+            checkDate.setDate(checkDate.getDate() - 1);
+            streak++;
+            continue;
+          }
+        }
+        break;
+      }
+    }
+
+    return { avgCalories, daysOnTrack, streak };
+  };
+
+  const { avgCalories, daysOnTrack, streak } = getWeeklyStats();
 
   return (
     <div className="fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      {/* Header Info */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div>
-          <h1>NutriScale AI</h1>
-          <h3 style={{ marginTop: '2px' }}>Hoje, {new Date().toLocaleDateString('pt-BR', { day: 'numeric', month: 'short' })}</h3>
-        </div>
-        {apiKeyMissing && (
-          <span className="badge-key-missing">
-            Sem Chave Gemini
-          </span>
-        )}
-      </div>
-
-      {/* API Key missing Warning Card */}
+      {/* Top Banner IA Key Missing */}
       {apiKeyMissing && (
-        <div className="card" style={{ background: 'rgba(239, 68, 68, 0.08)', borderColor: 'rgba(239, 68, 68, 0.2)', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-          <h3 style={{ color: 'var(--color-cal)', fontWeight: 600 }}>Chave API não configurada</h3>
-          <p style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-            Vá até a aba de Configurações e insira sua chave do Gemini para habilitar o escaneamento de alimentos pela balança.
-          </p>
+        <div style={{ background: 'rgba(245, 158, 11, 0.1)', border: '1px solid rgba(245, 158, 11, 0.25)', padding: '14px', borderRadius: '16px', display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
+          <AlertCircle size={20} style={{ color: 'var(--color-fat)', flexShrink: 0, marginTop: '2px' }} />
+          <div>
+            <h4 style={{ color: 'white', fontWeight: 600, fontSize: '13px' }}>Chave da API Ausente</h4>
+            <p style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '2px', lineHeight: '1.4' }}>
+              Insira a chave da API do Gemini nas Configurações para habilitar o escaneamento de pratos e a leitura da balança.
+            </p>
+          </div>
         </div>
       )}
 
-      {/* Progress Ring Card */}
-      <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '24px', alignItems: 'center', padding: '24px' }}>
-        <div className="progress-ring-container">
-          <svg height={radius * 2} width={radius * 2}>
-            {/* Background Circle */}
-            <circle
-              stroke="rgba(255,255,255,0.04)"
-              fill="transparent"
-              strokeWidth={stroke}
-              r={normalizedRadius}
-              cx={radius}
-              cy={radius}
-            />
-            {/* Progress Circle */}
-            <circle
-              className="progress-ring-circle"
-              stroke="var(--accent-light)"
-              fill="transparent"
-              strokeWidth={stroke}
-              strokeDasharray={circumference + ' ' + circumference}
-              style={{ strokeDashoffset }}
-              r={normalizedRadius}
-              cx={radius}
-              cy={radius}
-              strokeLinecap="round"
-            />
-          </svg>
-          <div className="progress-text">
-            <span className="progress-val">{calories}</span>
-            <span className="progress-unit">/ {targets.calories} kcal</span>
-          </div>
+      {/* Greeting Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <h1>NutriScale AI</h1>
+          <h3 style={{ marginTop: '2px' }}>Acompanhe sua nutrição diária</h3>
         </div>
-
-        <div style={{ textAlign: 'center' }}>
-          <span style={{ fontSize: '14px', color: 'var(--text-secondary)' }}>
-            {remainingKcal >= 0 
-              ? `Faltam ${remainingKcal} kcal para bater a meta` 
-              : `Meta batida! Excedeu ${Math.abs(remainingKcal)} kcal`}
-          </span>
+        <div style={{ background: 'rgba(16, 185, 129, 0.1)', color: 'var(--color-prot)', padding: '8px 14px', borderRadius: '12px', fontSize: '12px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <Zap size={14} style={{ fill: 'var(--color-prot)' }} />
+          <span>{streak} Dias Seguidos</span>
         </div>
       </div>
 
-      {/* Macros Section */}
-      <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-        <h2 style={{ fontSize: '16px' }}>Divisão de Macronutrientes</h2>
+      {/* Main Ring Card */}
+      <div className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-around', padding: '24px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <span style={{ fontSize: '12px', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Hoje</span>
+          <span style={{ fontSize: '32px', fontWeight: 800, color: 'white' }}>{Math.round(totals.calories)}</span>
+          <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>de {targets.calories} kcal</span>
+        </div>
+
+        {/* Progresso circular com acessibilidade aria-label */}
+        <div style={{ position: 'relative', width: radius * 2, height: radius * 2 }}>
+          <svg
+            height={radius * 2}
+            width={radius * 2}
+            role="img"
+            aria-label={`Progresso calórico: ${caloriesPercentage}% da meta diária de ${targets.calories} kcal`}
+          >
+            <circle
+              stroke="var(--border-color)"
+              fill="transparent"
+              strokeWidth={stroke}
+              r={normalizedRadius}
+              cx={radius}
+              cy={radius}
+            />
+            <circle
+              stroke="var(--accent)"
+              fill="transparent"
+              strokeWidth={stroke}
+              strokeDasharray={circumference + ' ' + circumference}
+              style={{ strokeDashoffset, strokeLinecap: 'round', transition: 'stroke-dashoffset 0.35s', transform: 'rotate(-90deg)', transformOrigin: '50% 50%' }}
+              r={normalizedRadius}
+              cx={radius}
+              cy={radius}
+            />
+          </svg>
+          <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', fontSize: '18px', fontWeight: 700, color: 'white' }}>
+            {caloriesPercentage}%
+          </div>
+        </div>
+      </div>
+
+      {/* Macros Progress Bar Cards */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        <h2 style={{ fontSize: '15px', fontWeight: 700 }}>Macronutrientes do Dia</h2>
         
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>
           {/* Proteínas */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-              <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 500 }}>
-                <Beef size={14} style={{ color: 'var(--color-prot)' }} /> Proteínas
-              </span>
-              <span style={{ color: 'var(--text-secondary)' }}>
-                {protein}g / <span style={{ color: 'var(--text-muted)' }}>{targets.protein}g</span>
-              </span>
-            </div>
-            <div style={{ height: '6px', background: 'rgba(255,255,255,0.04)', borderRadius: '10px', overflow: 'hidden' }}>
-              <div 
-                style={{ 
-                  height: '100%', 
-                  background: 'var(--color-prot)', 
-                  width: `${Math.min(100, (protein / targets.protein) * 100)}%`,
-                  borderRadius: '10px',
-                  transition: 'width 0.5s ease-in-out'
-                }} 
-              />
+          <div className="card" style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <span style={{ fontSize: '11px', color: 'var(--color-prot)', fontWeight: 600 }}>Proteínas</span>
+            <span style={{ fontSize: '18px', fontWeight: 700 }}>{Math.round(totals.protein)}g / {targets.protein}g</span>
+            <div style={{ height: '4px', background: 'var(--border-color)', borderRadius: '2px', overflow: 'hidden' }}>
+              <div style={{ height: '100%', background: 'var(--color-prot)', width: `${Math.min(100, (totals.protein / targets.protein) * 100)}%` }} />
             </div>
           </div>
-
+          
           {/* Carboidratos */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-              <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 500 }}>
-                <Wheat size={14} style={{ color: 'var(--color-carb)' }} /> Carboidratos
-              </span>
-              <span style={{ color: 'var(--text-secondary)' }}>
-                {carbs}g / <span style={{ color: 'var(--text-muted)' }}>{targets.carbs}g</span>
-              </span>
-            </div>
-            <div style={{ height: '6px', background: 'rgba(255,255,255,0.04)', borderRadius: '10px', overflow: 'hidden' }}>
-              <div 
-                style={{ 
-                  height: '100%', 
-                  background: 'var(--color-carb)', 
-                  width: `${Math.min(100, (carbs / targets.carbs) * 100)}%`,
-                  borderRadius: '10px',
-                  transition: 'width 0.5s ease-in-out'
-                }} 
-              />
+          <div className="card" style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <span style={{ fontSize: '11px', color: 'var(--color-carb)', fontWeight: 600 }}>Carboidratos</span>
+            <span style={{ fontSize: '18px', fontWeight: 700 }}>{Math.round(totals.carbs)}g / {targets.carbs}g</span>
+            <div style={{ height: '4px', background: 'var(--border-color)', borderRadius: '2px', overflow: 'hidden' }}>
+              <div style={{ height: '100%', background: 'var(--color-carb)', width: `${Math.min(100, (totals.carbs / targets.carbs) * 100)}%` }} />
             </div>
           </div>
 
           {/* Gorduras */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-              <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 500 }}>
-                <Droplets size={14} style={{ color: 'var(--color-fat)' }} /> Gorduras
-              </span>
-              <span style={{ color: 'var(--text-secondary)' }}>
-                {fat}g / <span style={{ color: 'var(--text-muted)' }}>{targets.fat}g</span>
-              </span>
+          <div className="card" style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <span style={{ fontSize: '11px', color: 'var(--color-fat)', fontWeight: 600 }}>Gorduras</span>
+            <span style={{ fontSize: '18px', fontWeight: 700 }}>{Math.round(totals.fat)}g / {targets.fat}g</span>
+            <div style={{ height: '4px', background: 'var(--border-color)', borderRadius: '2px', overflow: 'hidden' }}>
+              <div style={{ height: '100%', background: 'var(--color-fat)', width: `${Math.min(100, (totals.fat / targets.fat) * 100)}%` }} />
             </div>
-            <div style={{ height: '6px', background: 'rgba(255,255,255,0.04)', borderRadius: '10px', overflow: 'hidden' }}>
-              <div 
-                style={{ 
-                  height: '100%', 
-                  background: 'var(--color-fat)', 
-                  width: `${Math.min(100, (fat / targets.fat) * 100)}%`,
-                  borderRadius: '10px',
-                  transition: 'width 0.5s ease-in-out'
-                }} 
-              />
+          </div>
+        </div>
+
+        {/* Fibras e Sódio Secundários (item 3.10) */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+          {/* Fibras */}
+          <div className="card" style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <span style={{ fontSize: '11px', color: 'var(--accent-light)', fontWeight: 600 }}>Fibras alimentares</span>
+            <span style={{ fontSize: '16px', fontWeight: 700 }}>{Math.round(totals.fiber)}g / {targetFiber}g</span>
+            <div style={{ height: '4px', background: 'var(--border-color)', borderRadius: '2px', overflow: 'hidden' }}>
+              <div style={{ height: '100%', background: 'var(--accent-light)', width: `${Math.min(100, (totals.fiber / targetFiber) * 100)}%` }} />
+            </div>
+          </div>
+
+          {/* Sódio */}
+          <div className="card" style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <span style={{ fontSize: '11px', color: '#fb923c', fontWeight: 600 }}>Sódio</span>
+            <span style={{ fontSize: '16px', fontWeight: 700 }}>{Math.round(totals.sodium)}mg / {targetSodium}mg</span>
+            <div style={{ height: '4px', background: 'var(--border-color)', borderRadius: '2px', overflow: 'hidden' }}>
+              <div style={{ height: '100%', background: '#fb923c', width: `${Math.min(100, (totals.sodium / targetSodium) * 100)}%` }} />
             </div>
           </div>
         </div>
       </div>
 
-      {/* Refeições do Dia */}
-      <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-        <h2 style={{ fontSize: '16px' }}>Distribuição de Hoje</h2>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-          {categories.map(cat => (
-            <div 
-              key={cat.name} 
-              style={{ 
-                display: 'flex', 
-                justifyContent: 'space-between', 
-                alignItems: 'center',
-                paddingBottom: '8px',
-                borderBottom: '1px solid rgba(255,255,255,0.04)'
-              }}
-            >
-              <span style={{ fontSize: '14px', fontWeight: 500 }}>{cat.name}</span>
-              <span style={{ fontSize: '14px', fontWeight: 600, color: cat.calories > 0 ? 'var(--text-primary)' : 'var(--text-muted)' }}>
-                {Math.round(cat.calories)} kcal
-              </span>
+      {/* Seção Resumo Semanal (item 3.5) */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '4px' }}>
+        <h2 style={{ fontSize: '15px', fontWeight: 700 }}>Resumo da Semana</h2>
+        <div className="card" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          
+          <div style={{ display: 'flex', justifyContent: 'space-around', alignItems: 'center' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', color: 'var(--text-secondary)', fontSize: '12px' }}>
+                <TrendingUp size={14} aria-hidden="true" />
+                Média Diária
+              </div>
+              <span style={{ fontSize: '18px', fontWeight: 800, color: 'white' }}>{avgCalories} kcal</span>
             </div>
-          ))}
+            
+            <div style={{ width: '1px', height: '30px', backgroundColor: 'var(--border-color)' }} />
+
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', color: 'var(--text-secondary)', fontSize: '12px' }}>
+                <Calendar size={14} aria-hidden="true" />
+                Dias na Meta
+              </div>
+              <span style={{ fontSize: '18px', fontWeight: 800, color: 'var(--color-prot)' }}>{daysOnTrack} / 7 dias</span>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-secondary)' }}>
+              <span>Aderência à Meta Calórica Diária</span>
+              <span>{Math.round((daysOnTrack / 7) * 100)}%</span>
+            </div>
+            <div style={{ height: '6px', background: 'var(--border-color)', borderRadius: '3px', overflow: 'hidden' }}>
+              <div style={{ height: '100%', background: 'var(--color-prot)', width: `${(daysOnTrack / 7) * 100}%`, borderRadius: '3px' }} />
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Bottom CTA */}
-      <button className="btn" onClick={onNavigateToCamera} style={{ marginTop: '10px', padding: '16px' }}>
-        <Sparkles size={18} />
-        Registrar Nova Comida
-        <ArrowRight size={16} />
+      {/* Quick Access Actions */}
+      <button className="btn" onClick={onNavigateToCamera} style={{ marginTop: '10px', padding: '16px', display: 'flex', gap: '8px', boxShadow: '0 4px 12px rgba(16, 185, 129, 0.15)' }}>
+        <Camera size={18} aria-hidden="true" />
+        Escanear Novo Alimento
       </button>
     </div>
   );

@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Send, Bot, Trash2, Loader2, AlertCircle } from 'lucide-react';
-import { chatWithNutritionist, getRateLimitStatus } from '../services/gemini';
-import type { ChatMessage } from '../services/gemini';
+import { chatWithNutritionist, getRateLimitStatus, type RateLimitStatus, type ChatMessage } from '../services/gemini';
 import { getChatHistory, saveChatHistory } from '../services/db';
+import { useApp } from '../context/AppContext';
+import { ConfirmModal } from './ui/ConfirmModal';
 
 // Parser seguro de markdown para negritos e quebras de linha sem injeção perigosa de HTML (XSS Safe)
 function formatMessageText(text: string): React.ReactNode {
@@ -38,46 +39,39 @@ function formatMessageText(text: string): React.ReactNode {
   });
 }
 
-interface MealItem {
-  foodName: string;
-  weightGrams: number;
-  calories: number;
-  protein: number;
-  carbs: number;
-  fat: number;
-}
+export const Chat: React.FC = () => {
+  const { apiKey, modelName, meals, targets, customContext } = useApp();
 
-interface Meal {
-  id: string;
-  timestamp: number;
-  type: string;
-  items: MealItem[];
-}
-
-interface ChatProps {
-  apiKey: string;
-  modelName: string;
-  meals: Meal[];
-  targets: {
-    calories: number;
-    carbs: number;
-    protein: number;
-    fat: number;
-  };
-  customContext: string;
-}
-
-export const Chat: React.FC<ChatProps> = ({
-  apiKey,
-  modelName,
-  meals,
-  targets,
-  customContext,
-}) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isSending, setIsSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Controle de Rate-limiting local por estado (item 1.6)
+  const [rateLimitStatus, setRateLimitStatus] = useState<RateLimitStatus>({
+    isBlocked: false,
+    remainingCalls: 10,
+    limit: 10,
+    resetTimeSeconds: 0,
+  });
+
+  // Modal de Confirmação customizado (substitui o confirm nativo)
+  const [isClearModalOpen, setIsClearModalOpen] = useState(false);
+
+  // Atualiza rate-limit local a cada segundo
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval>;
+    
+    const refreshStatus = async () => {
+      const status = await getRateLimitStatus();
+      setRateLimitStatus(status);
+    };
+    
+    refreshStatus();
+    interval = setInterval(refreshStatus, 1000);
+    
+    return () => clearInterval(interval);
+  }, []);
 
   // Carrega mensagens do IndexedDB ao iniciar
   useEffect(() => {
@@ -119,9 +113,8 @@ export const Chat: React.FC<ChatProps> = ({
     }
 
     // Validação preventiva do Rate Limit no Chat
-    const rateStatus = getRateLimitStatus();
-    if (rateStatus.isBlocked) {
-      alert(`Limite de segurança excedido. O app bloqueou temporariamente novas chamadas de API. Aguarde ${rateStatus.resetTimeSeconds} segundos antes de tentar novamente.`);
+    if (rateLimitStatus.isBlocked) {
+      alert(`Limite de segurança excedido. O app bloqueou temporariamente novas chamadas de API. Aguarde ${rateLimitStatus.resetTimeSeconds} segundos antes de tentar novamente.`);
       return;
     }
 
@@ -129,7 +122,7 @@ export const Chat: React.FC<ChatProps> = ({
     setInput('');
     
     const newUserMsg: ChatMessage = {
-      id: Date.now().toString(),
+      id: crypto.randomUUID(), // Corrigido bug de IDs duplicados
       sender: 'user',
       text: userText,
       timestamp: Date.now(),
@@ -147,7 +140,7 @@ export const Chat: React.FC<ChatProps> = ({
     setIsSending(true);
 
     try {
-      // Chama o Gemini para responder
+      // Chama o Gemini para responder (enviando metas incluindo fibras e sódio)
       const reply = await chatWithNutritionist(
         apiKey,
         userText,
@@ -159,7 +152,7 @@ export const Chat: React.FC<ChatProps> = ({
       );
 
       const newAiMsg: ChatMessage = {
-        id: (Date.now() + 1).toString(),
+        id: crypto.randomUUID(), // Corrigido bug de IDs duplicados
         sender: 'ai',
         text: reply,
         timestamp: Date.now(),
@@ -170,7 +163,7 @@ export const Chat: React.FC<ChatProps> = ({
       await saveChatHistory(finalMessages);
     } catch (error: any) {
       const errorMsg: ChatMessage = {
-        id: (Date.now() + 1).toString(),
+        id: crypto.randomUUID(),
         sender: 'ai',
         text: `Erro ao conectar com o Gemini: ${error.message || 'Erro desconhecido. Verifique sua chave de API e internet.'}`,
         timestamp: Date.now(),
@@ -183,20 +176,20 @@ export const Chat: React.FC<ChatProps> = ({
     }
   };
 
-  const handleClearChat = async () => {
-    if (confirm('Deseja limpar todo o histórico desta conversa?')) {
-      const welcomeMsg: ChatMessage = {
-        id: 'welcome',
-        sender: 'ai',
-        text: 'Histórico limpo! Como posso ajudar você com a sua nutrição hoje?',
-        timestamp: Date.now(),
-      };
-      setMessages([welcomeMsg]);
-      try {
-        await saveChatHistory([welcomeMsg]);
-      } catch (err) {
-        console.error('Erro ao limpar chat no IndexedDB:', err);
-      }
+  const handleConfirmedClear = async () => {
+    setIsClearModalOpen(false);
+    
+    const welcomeMsg: ChatMessage = {
+      id: 'welcome',
+      sender: 'ai',
+      text: 'Histórico limpo! Como posso ajudar você com a sua nutrição hoje?',
+      timestamp: Date.now(),
+    };
+    setMessages([welcomeMsg]);
+    try {
+      await saveChatHistory([welcomeMsg]);
+    } catch (err) {
+      console.error('Erro ao limpar chat no IndexedDB:', err);
     }
   };
 
@@ -211,11 +204,11 @@ export const Chat: React.FC<ChatProps> = ({
           <h3 style={{ marginTop: '2px' }}>Tire dúvidas sobre seu dia</h3>
         </div>
         <button 
-          onClick={handleClearChat}
+          onClick={() => setIsClearModalOpen(true)}
           style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', padding: '6px' }}
-          title="Limpar Conversa"
+          aria-label="Limpar histórico do chat"
         >
-          <Trash2 size={18} />
+          <Trash2 size={18} aria-hidden="true" />
         </button>
       </div>
 
@@ -281,10 +274,10 @@ export const Chat: React.FC<ChatProps> = ({
       </div>
 
       {/* Rate Limit Warning Box */}
-      {getRateLimitStatus().isBlocked && (
+      {rateLimitStatus.isBlocked && (
         <div style={{ background: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.18)', padding: '8px 12px', borderRadius: '10px', color: 'var(--color-fat)', fontSize: '12px', display: 'flex', gap: '6px', alignItems: 'center', flexShrink: 0, marginBottom: '6px' }}>
           <AlertCircle size={14} />
-          <span>Rate limit ativo. Envio de novas mensagens liberado em {getRateLimitStatus().resetTimeSeconds} segundos.</span>
+          <span>Rate limit ativo. Envio de novas mensagens liberado em {rateLimitStatus.resetTimeSeconds} segundos.</span>
         </div>
       )}
 
@@ -304,9 +297,9 @@ export const Chat: React.FC<ChatProps> = ({
           className="form-input"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder={getRateLimitStatus().isBlocked ? "Aguardando liberação de taxa..." : "Ex: Quantas kcal comi hoje? Faltam quantos g de proteína?"}
-          style={{ flex: 1, padding: '12px 16px', fontSize: '14px', borderRadius: '24px', userSelect: 'text', opacity: getRateLimitStatus().isBlocked ? 0.6 : 1 }}
-          disabled={isSending || getRateLimitStatus().isBlocked}
+          placeholder={rateLimitStatus.isBlocked ? "Aguardando liberação de taxa..." : "Ex: Quantas kcal comi hoje? Faltam quantos g de proteína?"}
+          style={{ flex: 1, padding: '12px 16px', fontSize: '14px', borderRadius: '24px', userSelect: 'text', opacity: rateLimitStatus.isBlocked ? 0.6 : 1 }}
+          disabled={isSending || rateLimitStatus.isBlocked}
         />
         <button 
           type="submit" 
@@ -320,16 +313,29 @@ export const Chat: React.FC<ChatProps> = ({
             alignItems: 'center', 
             justifyContent: 'center',
             flexShrink: 0,
-            backgroundColor: (input.trim() && !getRateLimitStatus().isBlocked) ? 'var(--accent)' : 'var(--bg-card)',
-            color: (input.trim() && !getRateLimitStatus().isBlocked) ? 'white' : 'var(--text-muted)',
+            backgroundColor: (input.trim() && !rateLimitStatus.isBlocked) ? 'var(--accent)' : 'var(--bg-card)',
+            color: (input.trim() && !rateLimitStatus.isBlocked) ? 'white' : 'var(--text-muted)',
             boxShadow: 'none',
-            border: (input.trim() && !getRateLimitStatus().isBlocked) ? 'none' : '1px solid var(--border-color)',
+            border: (input.trim() && !rateLimitStatus.isBlocked) ? 'none' : '1px solid var(--border-color)',
           }}
-          disabled={!input.trim() || isSending || getRateLimitStatus().isBlocked}
+          disabled={!input.trim() || isSending || rateLimitStatus.isBlocked}
+          aria-label="Enviar mensagem"
         >
-          <Send size={18} />
+          <Send size={18} aria-hidden="true" />
         </button>
       </form>
+
+      {/* ConfirmModal customizado (iOS Safe) */}
+      <ConfirmModal
+        isOpen={isClearModalOpen}
+        title="Limpar conversa?"
+        message="Todo o histórico local de diálogo com o Nutricionista IA nesta tela será removido permanentemente. Refeições no diário não serão alteradas."
+        confirmLabel="Limpar Histórico"
+        cancelLabel="Voltar"
+        danger={true}
+        onConfirm={handleConfirmedClear}
+        onCancel={() => setIsClearModalOpen(false)}
+      />
     </div>
   );
 };

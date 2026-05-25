@@ -1,3 +1,7 @@
+import type { MealItem } from '../types';
+import { openDB } from './db';
+import { logger } from '../utils/logger';
+
 export interface GeminiAnalysisResult {
   foodName: string;
   weightGrams: number;
@@ -5,6 +9,8 @@ export interface GeminiAnalysisResult {
   protein: number;
   carbs: number;
   fat: number;
+  fiber: number;   // em g (obrigatório no novo schema)
+  sodium: number;  // em mg (obrigatório no novo schema)
   confidenceScale: number;
   confidenceFood: number;
   scaleReadText: string;
@@ -14,6 +20,13 @@ export interface GeminiAnalysisResult {
 export interface ExistingMealItem {
   foodName: string;
   weightGrams: number;
+}
+
+export interface ChatMessage {
+  id: string;
+  sender: 'user' | 'ai';
+  text: string;
+  timestamp: number;
 }
 
 /**
@@ -36,6 +49,39 @@ export const fileToGenerativePart = (file: File): Promise<{ inlineData: { data: 
   });
 };
 
+// --- Funções de Rate Limit Assíncronas via IndexedDB ---
+
+async function getRateLimitTimestamps(): Promise<number[]> {
+  try {
+    const db = await openDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction('settings', 'readonly');
+      const req = tx.objectStore('settings').get('rate_limit_timestamps');
+      req.onsuccess = () => {
+        resolve((req.result?.values as number[]) || []);
+      };
+      req.onerror = () => resolve([]);
+    });
+  } catch (err) {
+    logger.error('Erro ao ler timestamps de rate limit do DB', err);
+    return [];
+  }
+}
+
+async function saveRateLimitTimestamps(timestamps: number[]): Promise<void> {
+  try {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('settings', 'readwrite');
+      tx.objectStore('settings').put({ key: 'rate_limit_timestamps', values: timestamps });
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (err) {
+    logger.error('Erro ao salvar timestamps de rate limit no DB', err);
+  }
+}
+
 export interface RateLimitStatus {
   isBlocked: boolean;
   remainingCalls: number;
@@ -44,24 +90,16 @@ export interface RateLimitStatus {
 }
 
 /**
- * Retorna o status atual do rate limit local no cliente.
+ * Retorna o status atual do rate limit local no cliente consultando o IndexedDB.
  */
-export function getRateLimitStatus(): RateLimitStatus {
+export async function getRateLimitStatus(): Promise<RateLimitStatus> {
   const limit = 10;
   const windowMs = 60 * 1000;
   const now = Date.now();
   
-  const savedCalls = localStorage.getItem('nutri_api_call_timestamps');
-  let timestamps: number[] = [];
+  let timestamps = await getRateLimitTimestamps();
   
-  if (savedCalls) {
-    try {
-      timestamps = JSON.parse(savedCalls);
-    } catch (e) {
-      timestamps = [];
-    }
-  }
-  
+  // Filtra chamadas na janela de 60 segundos
   timestamps = timestamps.filter(t => now - t < windowMs);
   
   const isBlocked = timestamps.length >= limit;
@@ -83,32 +121,79 @@ export function getRateLimitStatus(): RateLimitStatus {
 }
 
 /**
- * Verifica e atualiza o limite de requisições do usuário (Max 10 req/min)
- * para evitar rate limiting ou suspensão de chaves gratuitas na Google.
+ * Verifica e atualiza o limite de requisições do usuário (Max 10 req/min) via IndexedDB.
  */
-function checkRateLimit(): void {
-  const status = getRateLimitStatus();
+async function checkRateLimit(): Promise<void> {
+  const status = await getRateLimitStatus();
   if (status.isBlocked) {
     throw new Error(`Limite de segurança excedido. O app bloqueou temporariamente novas chamadas para evitar suspensão da sua chave de API (máximo ${status.limit} requisições por minuto). Aguarde ${status.resetTimeSeconds} segundos.`);
   }
   
   const now = Date.now();
-  const savedCalls = localStorage.getItem('nutri_api_call_timestamps');
-  let timestamps: number[] = [];
-  
-  if (savedCalls) {
-    try {
-      timestamps = JSON.parse(savedCalls);
-    } catch (e) {
-      timestamps = [];
-    }
-  }
-  
+  let timestamps = await getRateLimitTimestamps();
   const windowMs = 60 * 1000;
   timestamps = timestamps.filter(t => now - t < windowMs);
   timestamps.push(now);
-  localStorage.setItem('nutri_api_call_timestamps', JSON.stringify(timestamps));
+  await saveRateLimitTimestamps(timestamps);
 }
+
+// --- Tratamento e Parsing Defensivo ---
+
+/**
+ * Realiza o parse seguro de respostas JSON do Gemini descartando markdown fences.
+ */
+function safeParseGeminiJson<T>(raw: string): T {
+  // Remove markdown fences se o modelo ignorar e retornar o bloco de código
+  const cleaned = raw
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/, '')
+    .trim();
+  
+  try {
+    return JSON.parse(cleaned) as T;
+  } catch (e) {
+    // Tenta extrair o primeiro padrão de JSON válido {} caso o modelo escreva texto adicional
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        return JSON.parse(jsonMatch[0]) as T;
+      } catch (innerErr) {
+        throw new Error(`Erro ao interpretar o conteúdo JSON extraído: ${raw.substring(0, 100)}`);
+      }
+    }
+    throw new Error(`Falha ao ler os dados estruturados da IA: ${raw.substring(0, 100)}`);
+  }
+}
+
+/**
+ * Trata erros específicos de status da API do Gemini para mensagens amigáveis.
+ */
+async function handleGeminiError(response: Response): Promise<never> {
+  let body: Record<string, any> = {};
+  try {
+    body = await response.json();
+  } catch { /* ignore */ }
+
+  const errorMessage = (body?.error as Record<string, any>)?.message as string || '';
+
+  switch (response.status) {
+    case 400:
+      throw new Error(`Requisição inválida: ${errorMessage || 'Verifique o formato da imagem ou parâmetros.'}`);
+    case 401:
+      throw new Error('Chave de API inválida ou expirada. Vá na aba de Ajustes e configure a chave do Gemini.');
+    case 403:
+      throw new Error('Acesso negado. Sua chave de API não tem permissão para acessar este modelo. Verifique as configurações no Google AI Studio.');
+    case 429:
+      throw new Error('Limite de requisições excedido na API da Google. Aguarde alguns instantes e tente novamente.');
+    case 500:
+    case 503:
+      throw new Error('O servidor do Gemini está temporariamente indisponível. Aguarde alguns instantes e tente novamente.');
+    default:
+      throw new Error(`Erro inesperado na API (${response.status}): ${errorMessage || 'Tente novamente.'}`);
+  }
+}
+
+// --- Funções de Chamada de API ---
 
 /**
  * Envia a imagem e o contexto para o Gemini API e retorna o JSON estruturado.
@@ -117,7 +202,7 @@ export async function analyzeFoodImage(
   imageFile: File,
   apiKey: string,
   existingItems: ExistingMealItem[] = [],
-  modelName: string = 'gemini-3.5-flash',
+  modelName: string = 'gemini-2.0-flash',
   userNotes: string = '',
   customContext: string = ''
 ): Promise<GeminiAnalysisResult> {
@@ -125,7 +210,7 @@ export async function analyzeFoodImage(
     throw new Error('Chave de API do Gemini não configurada.');
   }
 
-  checkRateLimit();
+  await checkRateLimit();
 
   // Prepara a imagem em Base64
   const imagePart = await fileToGenerativePart(imageFile);
@@ -159,9 +244,9 @@ COMENTÁRIO DO USUÁRIO SOBRE ESTA FOTO/REFEIÇÃO:
 ---
 
 Instruções críticas para a sua análise:
-1. IDENTIFICAR O ALIMENTO RECÉM-ADICIONADO: Compare as comidas visíveis no prato com a lista de alimentos já adicionados anteriormente, leve em consideração o COMENTÁRIO DO USUÁRIO (ex: se ele disser "café padrão" e estiver definido no contexto dele que o café padrão dele é "pão integral e queijo prato", ou se ele disser "couve refogada", use isso para guiar a identificação precisa). Identifique qual é o NOVO alimento colocado no prato nesta foto.
-2. LER O VISOR DA BALANÇA: Localize o visor da balança digital na foto. Extraia o valor numérico em gramas correspondente ao peso do novo alimento adicionado. Se o visor estiver com sinal de menos (-) ou unidade diferente, tente converter para gramas positivas. Se o visor estiver ilegível, borrado ou encoberto, estime o peso visualmente baseado no tamanho do alimento na foto e defina 'confidenceScale' para um valor baixo (< 0.5).
-3. CALCULAR VALORES NUTRICIONAIS: Com base no tipo de alimento identificado e seu peso estimado/lido em gramas, calcule a quantidade aproximada de Calorias (kcal), Proteínas (g), Carboidratos (g) e Gorduras (g).
+1. IDENTIFICAR O ALIMENTO RECÉM-ADICIONADO: Compare as comidas visíveis no prato com a lista de alimentos já adicionados anteriormente, leve em consideração o COMENTÁRIO DO USUÁRIO. Identifique qual é o NOVO alimento colocado no prato nesta foto.
+2. LER O VISOR DA BALANÇA: Localize o visor da balança digital na foto. Extraia o valor numérico em gramas correspondente ao peso do novo alimento adicionado. Se o visor estiver ilegível, borrado ou encoberto, estime o peso visualmente baseado no tamanho do alimento na foto e defina 'confidenceScale' para um valor baixo (< 0.5).
+3. CALCULAR VALORES NUTRICIONAIS: Com base no tipo de alimento identificado e seu peso estimado/lido em gramas, calcule a quantidade aproximada de Calorias (kcal), Proteínas (g), Carboidratos (g), Gorduras (g), Fibras (g) e Sódio (mg).
 4. RETORNAR EXCLUSIVAMENTE O SCHEMA JSON REQUISITADO.
 
 Responda rigorosamente seguindo o seguinte formato de objeto JSON:
@@ -172,6 +257,8 @@ Responda rigorosamente seguindo o seguinte formato de objeto JSON:
   "protein": 4.5, // proteínas em gramas (pode ser decimal)
   "carbs": 35.0, // carboidratos em gramas (pode ser decimal)
   "fat": 1.2, // gorduras em gramas (pode ser decimal)
+  "fiber": 2.5, // fibras em gramas (pode ser decimal)
+  "sodium": 15.0, // sódio em mg (inteiro ou decimal)
   "confidenceScale": 0.95, // confiança na leitura do peso da balança (0.0 a 1.0)
   "confidenceFood": 0.90, // confiança na identificação do alimento (0.0 a 1.0)
   "scaleReadText": "150g", // o texto literal do peso lido no visor da balança (ex: "150", "150 g", "0.15")
@@ -179,7 +266,6 @@ Responda rigorosamente seguindo o seguinte formato de objeto JSON:
 }
 `;
 
-  // Construção do payload da API do Gemini
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
 
   const payload = {
@@ -207,6 +293,8 @@ Responda rigorosamente seguindo o seguinte formato de objeto JSON:
           protein: { type: 'NUMBER' },
           carbs: { type: 'NUMBER' },
           fat: { type: 'NUMBER' },
+          fiber: { type: 'NUMBER' },
+          sodium: { type: 'NUMBER' },
           confidenceScale: { type: 'NUMBER' },
           confidenceFood: { type: 'NUMBER' },
           scaleReadText: { type: 'STRING' },
@@ -219,6 +307,8 @@ Responda rigorosamente seguindo o seguinte formato de objeto JSON:
           'protein',
           'carbs',
           'fat',
+          'fiber',
+          'sodium',
           'confidenceScale',
           'confidenceFood',
           'scaleReadText',
@@ -239,8 +329,7 @@ Responda rigorosamente seguindo o seguinte formato de objeto JSON:
     });
 
     if (!response.ok) {
-      console.error('Erro na chamada da API do Gemini (status:', response.status, ')');
-      throw new Error(`Erro na API (${response.status}): Ocorreu uma falha na análise. Verifique sua chave de API.`);
+      await handleGeminiError(response);
     }
 
     const data = await response.json();
@@ -250,32 +339,17 @@ Responda rigorosamente seguindo o seguinte formato de objeto JSON:
       throw new Error('Resposta vazia da API do Gemini.');
     }
 
-    const parsedResult: GeminiAnalysisResult = JSON.parse(textResponse.trim());
-    return parsedResult;
+    return safeParseGeminiJson<GeminiAnalysisResult>(textResponse);
   } catch (error) {
-    console.error('Erro ao analisar alimento com Gemini:', error);
+    logger.error('Erro ao analisar alimento com Gemini', error);
     throw error;
   }
-}
-
-export interface ChatMessage {
-  id: string;
-  sender: 'user' | 'ai';
-  text: string;
-  timestamp: number;
 }
 
 interface ChatMealSummary {
   type: string;
   timestamp: number;
-  items: {
-    foodName: string;
-    weightGrams: number;
-    calories: number;
-    protein: number;
-    carbs: number;
-    fat: number;
-  }[];
+  items: MealItem[];
 }
 
 /**
@@ -286,29 +360,35 @@ export async function chatWithNutritionist(
   message: string,
   chatHistory: ChatMessage[],
   mealsHistory: ChatMealSummary[],
-  targets: { calories: number; carbs: number; protein: number; fat: number },
+  targets: { calories: number; carbs: number; protein: number; fat: number; fiber?: number; sodium?: number },
   customContext: string = '',
-  modelName: string = 'gemini-3.5-flash'
+  modelName: string = 'gemini-2.0-flash'
 ): Promise<string> {
   if (!apiKey) {
     throw new Error('Chave de API do Gemini não configurada.');
   }
 
-  checkRateLimit();
+  await checkRateLimit();
 
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
 
-  // Formata o histórico de refeições do usuário de forma legível para a IA
-  const mealsText = mealsHistory.length > 0
-    ? mealsHistory.map((meal, index) => {
+  // OTIMIZAÇÃO: Filtra apenas refeições dos últimos 7 dias para evitar sobrecarga de tokens
+  const now = Date.now();
+  const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
+  const recentMeals = mealsHistory.filter(meal => meal.timestamp > sevenDaysAgo);
+
+  const mealsText = recentMeals.length > 0
+    ? recentMeals.map((meal, index) => {
         const date = new Date(meal.timestamp).toLocaleDateString('pt-BR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
-        const itemsList = meal.items.map(item => `  - ${item.foodName}: ${item.weightGrams}g (${item.calories} kcal, P:${item.protein}g, C:${item.carbs}g, G:${item.fat}g)`).join('\n');
+        const itemsList = meal.items.map(item => `  - ${item.foodName}: ${item.weightGrams}g (${item.calories} kcal, P:${item.protein}g, C:${item.carbs}g, G:${item.fat}g, Fibras:${item.fiber || 0}g, Sódio:${item.sodium || 0}mg)`).join('\n');
         return `Refeição ${index + 1} [${meal.type}] em ${date}:\n${itemsList}`;
       }).join('\n\n')
-    : 'Nenhuma refeição registrada no histórico ainda.';
+    : 'Nenhuma refeição registrada no histórico de 7 dias.';
 
-  // Formata a conversa recente
-  const conversationText = chatHistory.map(msg => 
+  // OTIMIZAÇÃO: Limita o histórico de chat enviado para as últimas 20 mensagens
+  const recentChatHistory = chatHistory.slice(-20);
+
+  const conversationText = recentChatHistory.map(msg => 
     `${msg.sender === 'user' ? 'Usuário' : 'Nutri (IA)'}: ${msg.text}`
   ).join('\n');
 
@@ -322,17 +402,19 @@ METAS DIÁRIAS DO USUÁRIO:
 - Proteínas: ${targets.protein}g
 - Carboidratos: ${targets.carbs}g
 - Gorduras: ${targets.fat}g
+- Fibras: ${targets.fiber || 25}g
+- Sódio: ${targets.sodium || 2000}mg
 
-INSTRUÇÕES/CONTEXTO PERSONALIZADO DO USUÁRIO (Lembre-se disso ao responder e ao mapear atalhos como 'café padrão' se ele perguntar):
+INSTRUÇÕES/CONTEXTO PERSONALIZADO DO USUÁRIO:
 ${customContext || 'Nenhum contexto extra fornecido.'}
 
-HISTÓRICO COMPLETO DE REFEIÇÕES DO USUÁRIO:
+HISTÓRICO RECENTE DE REFEIÇÕES DO USUÁRIO (ÚLTIMOS 7 DIAS):
 ${mealsText}
 
 DATA/HORA ATUAL DO SISTEMA: ${new Date().toLocaleString('pt-BR')}
 
 ---
-HISTÓRICO DE CHAT RECENTE COM O USUÁRIO:
+HISTÓRICO DE CHAT RECENTE COM O USUÁRIO (ÚLTIMOS 20 DIÁLOGOS):
 ${conversationText}
 
 Nova mensagem do Usuário: "${message}"
@@ -340,10 +422,11 @@ Nova mensagem do Usuário: "${message}"
 Responda à pergunta do usuário de forma útil.
 Requisitos da resposta:
 1. Responda em português de forma concisa e amigável (estilo conversa rápida de WhatsApp/iOS).
-2. Se ele perguntar sobre o que comeu hoje ou resumos das metas, use os dados acima para fazer os cálculos e responder exatamente quanto ele consumiu e quanto resta.
-3. Use markdown simples para formatação (ex: negritos).
-4. Mantenha a atitude empática de um nutricionista de futebol/esportes.
-5. Não invente refeições que não estão na lista de histórico, baseie-se estritamente nos fatos informados.
+2. Se ele perguntar sobre o que comeu hoje ou resumos das metas, use os dados acima para fazer os cálculos e responder exatamente quanto ele consumiu e quanto resta. Inclua cálculo de fibras e sódio.
+3. Se o usuário perguntar sobre dados mais antigos que 7 dias, informe que você tem acesso apenas ao histórico recente de 7 dias no contexto atual e peça para ele especificar o período se necessário.
+4. Use markdown simples para formatação (ex: negritos).
+5. Mantenha a atitude empática de um nutricionista de futebol/esportes.
+6. Não invente refeições que não estão na lista de histórico, baseie-se estritamente nos fatos informados.
 `;
 
   const payload = {
@@ -367,8 +450,7 @@ Requisitos da resposta:
     });
 
     if (!response.ok) {
-      console.error('Erro na chamada de chat com Gemini (status:', response.status, ')');
-      throw new Error(`Erro na API (${response.status}): Ocorreu uma falha no chat. Verifique sua conexão e chave de API.`);
+      await handleGeminiError(response);
     }
 
     const data = await response.json();
@@ -380,7 +462,7 @@ Requisitos da resposta:
 
     return reply.trim();
   } catch (error) {
-    console.error('Erro na chamada de chat com Gemini:', error);
+    logger.error('Erro na chamada de chat com Gemini', error);
     throw error;
   }
 }

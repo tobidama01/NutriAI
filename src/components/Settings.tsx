@@ -1,184 +1,247 @@
 import React, { useState } from 'react';
-import { Key, Target, RefreshCw, Trash2, CheckCircle2, Sparkles, MessageSquare, HelpCircle } from 'lucide-react';
+import { Key, Target, RefreshCw, Trash2, Sparkles, MessageSquare, HelpCircle, AlertCircle } from 'lucide-react';
 import type { ChatMessage } from '../services/gemini';
-import { saveSettingsToDB, saveChatHistory } from '../services/db';
+import { saveChatHistory } from '../services/db';
+import { useApp } from '../context/AppContext';
+import { ConfirmModal } from './ui/ConfirmModal';
 
 interface SettingsProps {
-  apiKey: string;
-  setApiKey: (key: string) => void;
-  modelName: string;
-  setModelName: (name: string) => void;
-  targets: {
-    calories: number;
-    carbs: number;
-    protein: number;
-    fat: number;
-  };
-  setTargets: (targets: { calories: number; carbs: number; protein: number; fat: number }) => void;
-  customContext: string;
-  setCustomContext: (context: string) => void;
-  onClearData: () => void;
+  onSaveSuccess: () => void;
+  onClearSuccess: () => void;
 }
 
 export const Settings: React.FC<SettingsProps> = ({
-  apiKey,
-  setApiKey,
-  modelName,
-  setModelName,
-  targets,
-  setTargets,
-  customContext,
-  setCustomContext,
-  onClearData,
+  onSaveSuccess,
+  onClearSuccess
 }) => {
+  const {
+    apiKey,
+    modelName,
+    customContext,
+    targets,
+    saveSettings,
+    handleClearData
+  } = useApp();
+
   const [localKey, setLocalKey] = useState(apiKey);
   const [localModel, setLocalModel] = useState(modelName);
   const [localContext, setLocalContext] = useState(customContext);
+  
   const [cal, setCal] = useState(targets.calories.toString());
   const [carb, setCarb] = useState(targets.carbs.toString());
   const [prot, setProt] = useState(targets.protein.toString());
   const [fat, setFat] = useState(targets.fat.toString());
-  const [showSaved, setShowSaved] = useState(false);
+  const [fib, setFib] = useState((targets.fiber ?? 25).toString());
+  const [sod, setSod] = useState((targets.sodium ?? 2000).toString());
+
+  const [validationErrors, setValidationErrors] = useState<string[]>([]);
   
   // Estado para importador de chat
   const [pastedChat, setPastedChat] = useState('');
   const [importStatus, setImportStatus] = useState<string | null>(null);
 
+  // Estados dos Modais de Confirmação customizados (Substituindo confirm/alert bloqueantes)
+  const [isClearModalOpen, setIsClearModalOpen] = useState(false);
+  const [isAlertModalOpen, setIsAlertModalOpen] = useState(false);
+  const [alertConfig, setAlertConfig] = useState({ title: '', message: '' });
+
+  const validateTargets = () => {
+    const errors: string[] = [];
+    const caloriesNum = parseInt(cal);
+    const proteinNum = parseInt(prot);
+    const carbsNum = parseInt(carb);
+    const fatNum = parseInt(fat);
+    const fiberNum = parseInt(fib);
+    const sodiumNum = parseInt(sod);
+
+    if (isNaN(caloriesNum) || caloriesNum < 500 || caloriesNum > 10000) {
+      errors.push('Calorias devem estar entre 500 e 10.000 kcal.');
+    }
+    if (isNaN(proteinNum) || proteinNum < 10 || proteinNum > 500) {
+      errors.push('Proteínas devem estar entre 10g e 500g.');
+    }
+    if (isNaN(carbsNum) || carbsNum < 10 || carbsNum > 1000) {
+      errors.push('Carboidratos devem estar entre 10g e 1.000g.');
+    }
+    if (isNaN(fatNum) || fatNum < 10 || fatNum > 500) {
+      errors.push('Gorduras devem estar entre 10g e 500g.');
+    }
+    if (isNaN(fiberNum) || fiberNum < 5 || fiberNum > 150) {
+      errors.push('Fibras devem estar entre 5g e 150g.');
+    }
+    if (isNaN(sodiumNum) || sodiumNum < 100 || sodiumNum > 10000) {
+      errors.push('Sódio deve estar entre 100mg e 10.000mg.');
+    }
+
+    return errors;
+  };
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    setApiKey(localKey);
-    setModelName(localModel);
-    setCustomContext(localContext);
-    
-    const newTargets = {
-      calories: parseInt(cal) || 2000,
-      carbs: parseInt(carb) || 200,
-      protein: parseInt(prot) || 120,
-      fat: parseInt(fat) || 60,
-    };
-    setTargets(newTargets);
+    setValidationErrors([]);
 
-    // Salva no IndexedDB
-    try {
-      await saveSettingsToDB({
-        apiKey: localKey,
-        modelName: localModel,
-        customContext: localContext,
-        targets: newTargets
-      });
-    } catch (err) {
-      console.error('Erro ao salvar configurações no IndexedDB:', err);
-    }
-
-    // Salva no localStorage como redundância/compatibilidade
-    localStorage.setItem('nutri_api_key', localKey);
-    localStorage.setItem('nutri_model_name', localModel);
-    localStorage.setItem('nutri_custom_context', localContext);
-    localStorage.setItem('nutri_targets', JSON.stringify(newTargets));
-
-    setShowSaved(true);
-    setTimeout(() => setShowSaved(false), 2000);
-  };
-
-  const handleClear = () => {
-    if (confirm('Tem certeza que deseja apagar todo o histórico de refeições e chaves salvas?')) {
-      onClearData();
-      setLocalKey('');
-      setLocalContext('');
-      setPastedChat('');
-      setCal('2000');
-      setCarb('200');
-      setProt('120');
-      setFat('60');
-      alert('Todos os dados foram resetados.');
-    }
-  };
-
-  // Parser inteligente para colar conversas do Gemini Web
-  const handleImportChat = async () => {
-    if (!pastedChat.trim()) {
-      setImportStatus('Cole o histórico primeiro.');
+    const errors = validateTargets();
+    if (errors.length > 0) {
+      setValidationErrors(errors);
       return;
     }
 
-    const lines = pastedChat.split('\n');
-    const parsedMessages: ChatMessage[] = [];
-    let currentSender: 'user' | 'ai' | null = null;
-    let currentTextLines: string[] = [];
-
-    const commitMessage = () => {
-      if (currentSender && currentTextLines.length > 0) {
-        const messageText = currentTextLines.join('\n').trim();
-        if (messageText) {
-          parsedMessages.push({
-            id: 'imported-' + Math.random().toString(36).substring(2, 11),
-            sender: currentSender,
-            text: messageText,
-            timestamp: Date.now() - (parsedMessages.length * 1000), // diferencia ligeiramente no tempo
-          });
-        }
-      }
-      currentTextLines = [];
+    const newTargets = {
+      calories: parseInt(cal),
+      carbs: parseInt(carb),
+      protein: parseInt(prot),
+      fat: parseInt(fat),
+      fiber: parseInt(fib),
+      sodium: parseInt(sod)
     };
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-      const lower = trimmed.toLowerCase();
-      
-      if (trimmed === 'Você' || lower === 'user' || lower === 'usuário') {
-        commitMessage();
-        currentSender = 'user';
-      } else if (trimmed === 'Gemini' || lower === 'ia' || lower === 'ai' || lower === 'model' || lower === 'antigravity') {
-        commitMessage();
-        currentSender = 'ai';
-      } else {
-        if (currentSender) {
-          currentTextLines.push(line);
+    try {
+      await saveSettings(localKey, localModel, localContext, newTargets);
+      onSaveSuccess();
+    } catch (err) {
+      setAlertConfig({
+        title: 'Falha ao Salvar',
+        message: 'Ocorreu um erro no IndexedDB ao tentar gravar as configurações.'
+      });
+      setIsAlertModalOpen(true);
+    }
+  };
+
+  const triggerClearModal = () => {
+    setIsClearModalOpen(true);
+  };
+
+  const handleConfirmedClear = async () => {
+    setIsClearModalOpen(false);
+    await handleClearData();
+    
+    // Reseta states locais
+    setLocalKey('');
+    setLocalContext('');
+    setPastedChat('');
+    setCal('2000');
+    setCarb('200');
+    setProt('120');
+    setFat('60');
+    setFib('25');
+    setSod('2000');
+    
+    onClearSuccess();
+  };
+
+  // Parser inteligente para importar conversas do Gemini
+  const handleImportChat = async () => {
+    if (!pastedChat.trim()) {
+      setImportStatus('Por favor, insira o histórico para importar.');
+      return;
+    }
+
+    let parsedMessages: ChatMessage[] = [];
+    const rawInput = pastedChat.trim();
+
+    // Caso o input seja um JSON exportado do Gemini (suporte nativo JSON - item 3.8)
+    if (rawInput.startsWith('{') || rawInput.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(rawInput);
+        const list = Array.isArray(parsed) ? parsed : (parsed.messages || parsed.history || []);
+        
+        if (Array.isArray(list) && list.length > 0) {
+          parsedMessages = list.map((m: any, idx: number) => {
+            const sender: 'user' | 'ai' = (m.sender === 'user' || m.role === 'user') ? 'user' : 'ai';
+            const text = m.text || m.content || m.message || '';
+            return {
+              id: crypto.randomUUID(),
+              sender,
+              text,
+              timestamp: m.timestamp || (Date.now() - (list.length - idx) * 1000)
+            };
+          }).filter(m => m.text);
         }
+      } catch (err) {
+        // Ignora e tenta via parser de texto como fallback
       }
     }
-    commitMessage(); // Salva a última mensagem
 
-    // Fallback: se o parser não encontrar tags de emissor, faz um split simples por blocos
+    // Parser por texto
     if (parsedMessages.length === 0) {
-      const paragraphs = pastedChat.split('\n\n').filter(p => p.trim());
-      paragraphs.forEach((p, idx) => {
-        parsedMessages.push({
-          id: 'imported-fb-' + idx,
-          sender: idx % 2 === 0 ? 'user' : 'ai', // assume alternado iniciando pelo usuário
-          text: p.trim(),
-          timestamp: Date.now() - (paragraphs.length - idx) * 1000,
+      const lines = rawInput.split('\n');
+      let currentSender: 'user' | 'ai' | null = null;
+      let currentTextLines: string[] = [];
+
+      const commitMessage = () => {
+        if (currentSender && currentTextLines.length > 0) {
+          const messageText = currentTextLines.join('\n').trim();
+          if (messageText) {
+            parsedMessages.push({
+              id: crypto.randomUUID(),
+              sender: currentSender,
+              text: messageText,
+              timestamp: Date.now() - (parsedMessages.length * 1000)
+            });
+          }
+        }
+        currentTextLines = [];
+      };
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        const lower = trimmed.toLowerCase();
+        
+        if (trimmed === 'Você' || lower === 'user' || lower === 'usuário') {
+          commitMessage();
+          currentSender = 'user';
+        } else if (trimmed === 'Gemini' || lower === 'ia' || lower === 'ai' || lower === 'model' || lower === 'antigravity') {
+          commitMessage();
+          currentSender = 'ai';
+        } else {
+          if (currentSender) {
+            currentTextLines.push(line);
+          }
+        }
+      }
+      commitMessage(); // Salva a última mensagem
+
+      // Fallback simples se não encontrar cabeçalhos definidos
+      if (parsedMessages.length === 0) {
+        const paragraphs = rawInput.split('\n\n').filter(p => p.trim());
+        paragraphs.forEach((p, idx) => {
+          parsedMessages.push({
+            id: crypto.randomUUID(),
+            sender: (idx % 2 === 0 ? 'user' : 'ai') as 'user' | 'ai',
+            text: p.trim(),
+            timestamp: Date.now() - (paragraphs.length - idx) * 1000
+          });
         });
-      });
+      }
     }
 
     if (parsedMessages.length > 0) {
-      // Adiciona uma mensagem de sistema no topo notificando a importação
+      // Mensagem de boas-vindas genérica sem referenciar nome privado (item 3.8)
       const systemWelcome: ChatMessage = {
-        id: 'welcome-imported',
+        id: crypto.randomUUID(),
         sender: 'ai',
-        text: `Histórico da conversa "Otimizando Treino e Futebol" importada com sucesso (${parsedMessages.length} mensagens). Agora tenho o contexto anterior da sua dieta e treinos! Como deseja continuar hoje?`,
-        timestamp: Date.now() - (parsedMessages.length + 1) * 1000,
+        text: `Histórico importado com sucesso (${parsedMessages.length} mensagens). Agora tenho o contexto da sua conversa anterior. Como posso ajudar hoje?`,
+        timestamp: Date.now() - (parsedMessages.length + 1) * 1000
       };
 
       const finalChat = [systemWelcome, ...parsedMessages];
-      // Inverte para manter ordem cronológica se o tempo decrescente foi usado
       finalChat.sort((a, b) => a.timestamp - b.timestamp);
 
       try {
         await saveChatHistory(finalChat);
+        setImportStatus(`Sucesso! ${parsedMessages.length} mensagens importadas.`);
+        setPastedChat('');
+        
+        setAlertConfig({
+          title: 'Histórico Importado',
+          message: 'O histórico foi mesclado com sucesso. Vá na aba de Chat para prosseguir.'
+        });
+        setIsAlertModalOpen(true);
       } catch (err) {
-        console.error('Erro ao salvar chat importado no IndexedDB:', err);
+        setImportStatus('Falha ao gravar mensagens importadas no IndexedDB.');
       }
-
-      localStorage.setItem('nutri_chat_history', JSON.stringify(finalChat));
-      setImportStatus(`Sucesso! ${parsedMessages.length} mensagens importadas.`);
-      setPastedChat('');
-      
-      // Notifica as regras personalizadas caso contenha atalhos no chat
-      alert('Conversa importada com sucesso! Vá na aba de Chat para continuar.');
     } else {
-      setImportStatus('Falha ao processar o formato. Tente copiar novamente.');
+      setImportStatus('Não foi possível identificar o formato das mensagens. Cole ou anexe um texto válido.');
     }
   };
 
@@ -191,11 +254,11 @@ export const Settings: React.FC<SettingsProps> = ({
       const text = event.target?.result as string;
       if (text) {
         setPastedChat(text);
-        setImportStatus(`Arquivo "${file.name}" carregado. Clique em 'Importar e Mesclar Histórico' para processar.`);
+        setImportStatus(`Arquivo "${file.name}" carregado. Clique em 'Importar e Mesclar Histórico'.`);
       }
     };
     reader.onerror = () => {
-      setImportStatus('Falha ao ler o arquivo txt.');
+      setImportStatus('Falha ao ler o arquivo selecionado.');
     };
     reader.readAsText(file);
   };
@@ -203,9 +266,23 @@ export const Settings: React.FC<SettingsProps> = ({
   return (
     <div className="fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <div>
-        <h1>Configurações</h1>
+        <h1>Ajustes</h1>
         <h3 style={{ marginTop: '4px' }}>Configure suas chaves, metas e histórico</h3>
       </div>
+
+      {validationErrors.length > 0 && (
+        <div style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.25)', borderRadius: '16px', padding: '16px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--color-cal)', fontWeight: 700 }}>
+            <AlertCircle size={18} />
+            <span>Erros de Validação</span>
+          </div>
+          <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '13px', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+            {validationErrors.map((err, idx) => (
+              <li key={idx}>{err}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
         {/* Gemini API Key Card */}
@@ -215,30 +292,35 @@ export const Settings: React.FC<SettingsProps> = ({
             <h2 style={{ fontSize: '17px' }}>Chave da API do Gemini</h2>
           </div>
           <p style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-            Insira sua chave para habilitar a análise de imagens. A chave é armazenada de forma segura e local no seu celular.
+            Insira sua chave para habilitar a análise de imagens. <strong style={{ color: 'var(--color-prot)' }}>Armazenada apenas no banco local seguro do seu dispositivo (IndexedDB).</strong>
           </p>
           <div className="form-group">
-            <label className="form-label">Chave de API (Gemini)</label>
+            <label className="form-label" htmlFor="api-key-input">Chave de API (Gemini)</label>
             <input
+              id="api-key-input"
               type="password"
               className="form-input"
               value={localKey}
               onChange={(e) => setLocalKey(e.target.value)}
               placeholder="AIzaSy..."
+              autoComplete="off"
+              autoCorrect="off"
             />
           </div>
           <div className="form-group">
-            <label className="form-label">Modelo de IA</label>
+            <label className="form-label" htmlFor="model-select">Modelo de IA</label>
             <select
+              id="model-select"
               className="form-input"
               value={localModel}
               onChange={(e) => setLocalModel(e.target.value)}
               style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-color)', color: 'white' }}
             >
-              <option value="gemini-3.5-flash">Gemini 3.5 Flash (Rápido e Preciso - Recomendado)</option>
-              <option value="gemini-3.5-pro">Gemini 3.5 Pro (Extrema Precisão)</option>
-              <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
-              <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+              <option value="gemini-2.0-flash">Gemini 2.0 Flash (Rápido - Recomendado)</option>
+              <option value="gemini-2.0-flash-thinking-exp">Gemini 2.0 Flash Thinking (Raciocínio)</option>
+              <option value="gemini-1.5-flash">Gemini 1.5 Flash (Estável)</option>
+              <option value="gemini-1.5-pro">Gemini 1.5 Pro (Alta Precisão)</option>
+              <option value="gemini-2.5-pro-preview-06-05">Gemini 2.5 Pro Preview (Experimental)</option>
             </select>
           </div>
         </div>
@@ -253,8 +335,9 @@ export const Settings: React.FC<SettingsProps> = ({
             Defina atalhos como "café padrão" ou preferências que a IA usará ao identificar pratos e responder no Chat.
           </p>
           <div className="form-group">
-            <label className="form-label">Regras e Atalhos alimentares</label>
+            <label className="form-label" htmlFor="custom-context-area">Regras e Atalhos alimentares</label>
             <textarea
+              id="custom-context-area"
               className="form-input"
               rows={4}
               value={localContext}
@@ -269,36 +352,38 @@ export const Settings: React.FC<SettingsProps> = ({
         <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <MessageSquare size={20} className="tab-icon-wrapper" style={{ color: 'var(--accent-light)' }} />
-            <h2 style={{ fontSize: '17px' }}>Importar "Otimizando Treino e Futebol"</h2>
+            <h2 style={{ fontSize: '17px' }}>Importar Histórico de Conversa</h2>
           </div>
           
           <div style={{ background: 'rgba(16, 185, 129, 0.04)', padding: '12px', borderRadius: '12px', border: '1px solid var(--border-color)', display: 'flex', gap: '8px' }}>
             <HelpCircle size={18} style={{ color: 'var(--accent-light)', flexShrink: 0, marginTop: '2px' }} />
             <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-              Para conectar o histórico do Gemini Web:<br />
-              1. Acesse o chat <strong>"Otimizando Treino e Futebol"</strong> no app do Gemini Web.<br />
-              2. Selecione e copie o texto das mensagens que deseja trazer.<br />
-              3. Cole o texto na caixa abaixo e clique em importar. O app mapeará a conversa!
+              Para conectar histórico anterior:<br />
+              1. Acesse sua conversa no app do Gemini Web.<br />
+              2. Selecione e copie o texto ou exporte o histórico (JSON).<br />
+              3. Cole os dados na caixa ou anexe o arquivo .txt/.json.
             </div>
           </div>
 
           <div className="form-group">
-            <label className="form-label">Colar Conversa do Gemini</label>
+            <label className="form-label" htmlFor="chat-paste-area">Colar Conversa do Gemini</label>
             <textarea
+              id="chat-paste-area"
               className="form-input"
               rows={4}
               value={pastedChat}
               onChange={(e) => setPastedChat(e.target.value)}
-              placeholder="Cole o texto copiado do chat aqui..."
+              placeholder="Cole o texto ou JSON exportado aqui..."
               style={{ resize: 'vertical', userSelect: 'text', fontFamily: 'inherit', fontSize: '13px' }}
             />
           </div>
 
           <div className="form-group">
-            <label className="form-label">Ou Anexar arquivo .txt com a conversa</label>
+            <label className="form-label" htmlFor="chat-file-input">Ou Anexar arquivo com a conversa (.txt ou .json)</label>
             <input
+              id="chat-file-input"
               type="file"
-              accept=".txt"
+              accept=".txt,.json"
               onChange={handleFileImport}
               className="form-input"
               style={{ fontSize: '13px', padding: '8px 12px', background: 'var(--bg-surface)' }}
@@ -330,8 +415,9 @@ export const Settings: React.FC<SettingsProps> = ({
           
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
             <div className="form-group">
-              <label className="form-label">Calorias (kcal)</label>
+              <label className="form-label" htmlFor="target-calories">Calorias (kcal)</label>
               <input
+                id="target-calories"
                 type="number"
                 className="form-input"
                 value={cal}
@@ -339,8 +425,9 @@ export const Settings: React.FC<SettingsProps> = ({
               />
             </div>
             <div className="form-group">
-              <label className="form-label">Proteínas (g)</label>
+              <label className="form-label" htmlFor="target-protein">Proteínas (g)</label>
               <input
+                id="target-protein"
                 type="number"
                 className="form-input"
                 value={prot}
@@ -348,8 +435,9 @@ export const Settings: React.FC<SettingsProps> = ({
               />
             </div>
             <div className="form-group">
-              <label className="form-label">Carboidratos (g)</label>
+              <label className="form-label" htmlFor="target-carbs">Carboidratos (g)</label>
               <input
+                id="target-carbs"
                 type="number"
                 className="form-input"
                 value={carb}
@@ -357,29 +445,41 @@ export const Settings: React.FC<SettingsProps> = ({
               />
             </div>
             <div className="form-group">
-              <label className="form-label">Gorduras (g)</label>
+              <label className="form-label" htmlFor="target-fat">Gorduras (g)</label>
               <input
+                id="target-fat"
                 type="number"
                 className="form-input"
                 value={fat}
                 onChange={(e) => setFat(e.target.value)}
               />
             </div>
+            <div className="form-group">
+              <label className="form-label" htmlFor="target-fiber">Fibras (g)</label>
+              <input
+                id="target-fiber"
+                type="number"
+                className="form-input"
+                value={fib}
+                onChange={(e) => setFib(e.target.value)}
+              />
+            </div>
+            <div className="form-group">
+              <label className="form-label" htmlFor="target-sodium">Sódio (mg)</label>
+              <input
+                id="target-sodium"
+                type="number"
+                className="form-input"
+                value={sod}
+                onChange={(e) => setSod(e.target.value)}
+              />
+            </div>
           </div>
         </div>
 
         <button type="submit" className="btn">
-          {showSaved ? (
-            <>
-              <CheckCircle2 size={18} />
-              Configurações Salvas!
-            </>
-          ) : (
-            <>
-              <RefreshCw size={18} />
-              Salvar Alterações
-            </>
-          )}
+          <RefreshCw size={18} />
+          Salvar Alterações
         </button>
       </form>
 
@@ -387,13 +487,39 @@ export const Settings: React.FC<SettingsProps> = ({
       <div className="card" style={{ border: '1px solid rgba(239, 68, 68, 0.2)', display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '10px' }}>
         <h2 style={{ fontSize: '16px', color: 'var(--color-cal)' }}>Zona de Perigo</h2>
         <p style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-          Apagar o cache local removerá todas as refeições do seu histórico e as configurações salvas.
+          Apagar o banco local removerá todas as refeições do seu histórico e as chaves cadastradas.
         </p>
-        <button className="btn btn-secondary btn-danger" onClick={handleClear} style={{ display: 'flex', gap: '8px', padding: '12px' }}>
+        <button 
+          className="btn btn-secondary btn-danger" 
+          onClick={triggerClearModal} 
+          style={{ display: 'flex', gap: '8px', padding: '12px' }}
+        >
           <Trash2 size={16} />
           Limpar Todos os Dados
         </button>
       </div>
+
+      {/* Modais de Confirmação customizados (iOS Safe) */}
+      <ConfirmModal
+        isOpen={isClearModalOpen}
+        title="Apagar todos os dados?"
+        message="Esta ação é definitiva e apagará permanentemente todas as suas refeições do IndexedDB, histórico do chat e as metas cadastradas. Deseja continuar?"
+        confirmLabel="Sim, Apagar Tudo"
+        cancelLabel="Cancelar"
+        danger={true}
+        onConfirm={handleConfirmedClear}
+        onCancel={() => setIsClearModalOpen(false)}
+      />
+
+      <ConfirmModal
+        isOpen={isAlertModalOpen}
+        title={alertConfig.title}
+        message={alertConfig.message}
+        confirmLabel="Entendido"
+        cancelLabel="Fechar"
+        onConfirm={() => setIsAlertModalOpen(false)}
+        onCancel={() => setIsAlertModalOpen(false)}
+      />
     </div>
   );
 };

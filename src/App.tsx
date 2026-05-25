@@ -1,163 +1,25 @@
-import { useState, useEffect } from 'react';
-import { Home, Camera, CalendarRange, Settings as SettingsIcon, MessageSquare } from 'lucide-react';
+import { useApp } from './context/AppContext';
+import { Home, Camera, CalendarRange, Settings as SettingsIcon, MessageSquare, Loader2 } from 'lucide-react';
 import { Dashboard } from './components/Dashboard';
 import { MealCreator } from './components/MealCreator';
 import { MealHistory } from './components/MealHistory';
 import { Settings } from './components/Settings';
 import { Chat } from './components/Chat';
-import { getMeals, saveMeal, deleteMealFromDB, getSettingsFromDB, saveSettingsToDB, clearAllDBData } from './services/db';
-
-interface MealItem {
-  foodName: string;
-  weightGrams: number;
-  calories: number;
-  protein: number;
-  carbs: number;
-  fat: number;
-}
-
-interface Meal {
-  id: string;
-  timestamp: number;
-  type: string;
-  items: MealItem[];
-}
-
-interface Targets {
-  calories: number;
-  carbs: number;
-  protein: number;
-  fat: number;
-}
+import { Toast } from './components/ui/Toast';
+import { useState } from 'react';
 
 function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'camera' | 'history' | 'settings' | 'chat'>('dashboard');
+  const { activeTab, setActiveTab, isLoading, apiKey } = useApp();
   
-  // Estados globais persistidos no IndexedDB
-  const [apiKey, setApiKey] = useState<string>('');
-  const [modelName, setModelName] = useState<string>('gemini-3.5-flash');
-  const [customContext, setCustomContext] = useState<string>('');
-  const [targets, setTargets] = useState<Targets>({
-    calories: 2000,
-    carbs: 200,
-    protein: 120,
-    fat: 60
-  });
-  const [meals, setMeals] = useState<Meal[]>([]);
+  // Sistema de Toast Global (item 3.6)
+  const [toastMessage, setToastMessage] = useState('');
+  const [toastType, setToastType] = useState<'success' | 'error' | 'info'>('success');
+  const [isToastVisible, setIsToastVisible] = useState(false);
 
-  // Carrega os dados salvos do IndexedDB ao iniciar o app (com fallback para localStorage legado)
-  useEffect(() => {
-    async function loadData() {
-      try {
-        const dbSettings = await getSettingsFromDB();
-        if (dbSettings) {
-          setApiKey(dbSettings.apiKey || '');
-          setModelName(dbSettings.modelName || 'gemini-3.5-flash');
-          setCustomContext(dbSettings.customContext || '');
-          if (dbSettings.targets) {
-            setTargets(dbSettings.targets);
-          }
-        } else {
-          // Fallback para localStorage legado no primeiro acesso
-          const savedKey = localStorage.getItem('nutri_api_key') || '';
-          const savedModel = localStorage.getItem('nutri_model_name') || 'gemini-3.5-flash';
-          const savedContext = localStorage.getItem('nutri_custom_context') || '';
-          const savedTargets = localStorage.getItem('nutri_targets');
-
-          if (savedKey) setApiKey(savedKey);
-          if (savedModel) setModelName(savedModel);
-          if (savedContext) setCustomContext(savedContext);
-          if (savedTargets) {
-            try {
-              const parsedTargets = JSON.parse(savedTargets);
-              setTargets(parsedTargets);
-              // Salva no IndexedDB para migração
-              await saveSettingsToDB({
-                apiKey: savedKey,
-                modelName: savedModel,
-                customContext: savedContext,
-                targets: parsedTargets
-              });
-            } catch (e) {
-              console.error(e);
-            }
-          }
-        }
-
-        const dbMeals = await getMeals();
-        if (dbMeals && dbMeals.length > 0) {
-          setMeals(dbMeals);
-        } else {
-          // Migração do localStorage legado
-          const savedMeals = localStorage.getItem('nutri_meals');
-          if (savedMeals) {
-            try {
-              const parsedMeals = JSON.parse(savedMeals);
-              setMeals(parsedMeals);
-              for (const m of parsedMeals) {
-                await saveMeal(m);
-              }
-            } catch (e) {
-              console.error(e);
-            }
-          }
-        }
-      } catch (err) {
-        console.error('Erro ao ler dados do IndexedDB:', err);
-      }
-    }
-    loadData();
-  }, []);
-
-  const handleSaveMeal = async (mealType: string, items: MealItem[]) => {
-    const newMeal: Meal = {
-      id: Date.now().toString(),
-      timestamp: Date.now(),
-      type: mealType,
-      items: items,
-    };
-
-    const updatedMeals = [newMeal, ...meals];
-    setMeals(updatedMeals);
-    
-    try {
-      await saveMeal(newMeal);
-    } catch (e) {
-      console.error('Erro ao salvar refeição no IndexedDB:', e);
-    }
-    
-    // Volta para o dashboard após salvar com sucesso
-    setActiveTab('dashboard');
-  };
-
-  const handleDeleteMeal = async (id: string) => {
-    const updatedMeals = meals.filter(meal => meal.id !== id);
-    setMeals(updatedMeals);
-    try {
-      await deleteMealFromDB(id);
-    } catch (e) {
-      console.error('Erro ao deletar refeição do IndexedDB:', e);
-    }
-  };
-
-  const handleClearData = async () => {
-    try {
-      await clearAllDBData();
-    } catch (e) {
-      console.error('Erro ao apagar banco de dados IndexedDB:', e);
-    }
-    localStorage.clear();
-    setApiKey('');
-    setModelName('gemini-3.5-flash');
-    setCustomContext('');
-    setTargets({
-      calories: 2000,
-      carbs: 200,
-      protein: 120,
-      fat: 60
-    });
-    setMeals([]);
-    setActiveTab('dashboard');
+  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
+    setToastMessage(message);
+    setToastType(type);
+    setIsToastVisible(true);
   };
 
   // Renderizador de abas
@@ -166,8 +28,6 @@ function App() {
       case 'dashboard':
         return (
           <Dashboard
-            meals={meals}
-            targets={targets}
             onNavigateToCamera={() => setActiveTab('camera')}
             apiKeyMissing={!apiKey}
           />
@@ -175,49 +35,55 @@ function App() {
       case 'camera':
         return (
           <MealCreator
-            apiKey={apiKey}
-            modelName={modelName}
-            customContext={customContext}
-            onSaveMeal={handleSaveMeal}
+            onSaveSuccess={() => {
+              showToast('Refeição salva com sucesso!', 'success');
+              setActiveTab('dashboard');
+            }}
             onCancel={() => setActiveTab('dashboard')}
           />
         );
       case 'chat':
-        return (
-          <Chat
-            apiKey={apiKey}
-            modelName={modelName}
-            meals={meals}
-            targets={targets}
-            customContext={customContext}
-          />
-        );
+        return <Chat />;
       case 'history':
         return (
           <MealHistory
-            meals={meals}
-            onDeleteMeal={handleDeleteMeal}
+            onDeleteSuccess={() => showToast('Refeição removida.', 'info')}
             onNavigateToCamera={() => setActiveTab('camera')}
           />
         );
       case 'settings':
         return (
           <Settings
-            apiKey={apiKey}
-            setApiKey={setApiKey}
-            modelName={modelName}
-            setModelName={setModelName}
-            targets={targets}
-            setTargets={setTargets}
-            customContext={customContext}
-            setCustomContext={setCustomContext}
-            onClearData={handleClearData}
+            onSaveSuccess={() => showToast('Configurações atualizadas.', 'success')}
+            onClearSuccess={() => showToast('Todos os dados foram resetados.', 'info')}
           />
         );
       default:
-        return <Dashboard meals={meals} targets={targets} onNavigateToCamera={() => setActiveTab('camera')} apiKeyMissing={!apiKey} />;
+        return <Dashboard onNavigateToCamera={() => setActiveTab('camera')} apiKeyMissing={!apiKey} />;
     }
   };
+
+  if (isLoading) {
+    return (
+      <div 
+        className="app-container" 
+        style={{ 
+          display: 'flex', 
+          flexDirection: 'column',
+          alignItems: 'center', 
+          justifyContent: 'center', 
+          minHeight: '100vh',
+          background: 'var(--bg)',
+          color: 'white'
+        }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px' }}>
+          <Loader2 size={40} style={{ animation: 'spin 1.5s linear infinite', color: 'var(--accent-light)' }} />
+          <p style={{ color: 'var(--text-secondary)', fontSize: '14px', fontWeight: 500 }}>Carregando seus dados...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="app-container">
@@ -234,9 +100,10 @@ function App() {
         <button 
           className={`tab-item ${activeTab === 'dashboard' ? 'active' : ''}`}
           onClick={() => setActiveTab('dashboard')}
+          aria-label="Ir para Dashboard"
         >
           <div className="tab-icon-wrapper">
-            <Home size={20} />
+            <Home size={20} aria-hidden="true" />
           </div>
           Dashboard
         </button>
@@ -244,9 +111,10 @@ function App() {
         <button 
           className={`tab-item ${activeTab === 'camera' ? 'active' : ''}`}
           onClick={() => setActiveTab('camera')}
+          aria-label="Adicionar Refeição (Câmera)"
         >
           <div className="tab-icon-wrapper">
-            <Camera size={20} />
+            <Camera size={20} aria-hidden="true" />
           </div>
           Câmera
         </button>
@@ -254,9 +122,10 @@ function App() {
         <button 
           className={`tab-item ${activeTab === 'chat' ? 'active' : ''}`}
           onClick={() => setActiveTab('chat')}
+          aria-label="Abrir Chat com Nutri IA"
         >
           <div className="tab-icon-wrapper">
-            <MessageSquare size={20} />
+            <MessageSquare size={20} aria-hidden="true" />
           </div>
           Chat
         </button>
@@ -264,9 +133,10 @@ function App() {
         <button 
           className={`tab-item ${activeTab === 'history' ? 'active' : ''}`}
           onClick={() => setActiveTab('history')}
+          aria-label="Ver Histórico de Refeições"
         >
           <div className="tab-icon-wrapper">
-            <CalendarRange size={20} />
+            <CalendarRange size={20} aria-hidden="true" />
           </div>
           Histórico
         </button>
@@ -274,13 +144,22 @@ function App() {
         <button 
           className={`tab-item ${activeTab === 'settings' ? 'active' : ''}`}
           onClick={() => setActiveTab('settings')}
+          aria-label="Ajustes e Configurações"
         >
           <div className="tab-icon-wrapper">
-            <SettingsIcon size={20} />
+            <SettingsIcon size={20} aria-hidden="true" />
           </div>
           Ajustes
         </button>
       </nav>
+
+      {/* Sistema de Toast Unificado */}
+      <Toast
+        message={toastMessage}
+        type={toastType}
+        isVisible={isToastVisible}
+        onClose={() => setIsToastVisible(false)}
+      />
     </div>
   );
 }
