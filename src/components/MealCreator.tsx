@@ -1,6 +1,6 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Camera, Plus, Check, Trash2, ArrowLeft, Loader2, Sparkles, Scale, AlertCircle } from 'lucide-react';
-import { analyzeFoodImage } from '../services/gemini';
+import { analyzeFoodImage, getRateLimitStatus } from '../services/gemini';
 import type { GeminiAnalysisResult, ExistingMealItem } from '../services/gemini';
 
 interface MealCreatorProps {
@@ -34,9 +34,32 @@ export const MealCreator: React.FC<MealCreatorProps> = ({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Libera a URL do preview ao desmontar ou trocar a imagem para evitar Memory Leaks
+  useEffect(() => {
+    return () => {
+      if (imagePreview) {
+        URL.revokeObjectURL(imagePreview);
+      }
+    };
+  }, [imagePreview]);
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      // Validações de segurança contra falhas de upload e arquivos gigantes
+      if (!file.type.startsWith('image/')) {
+        setErrorMsg('Por favor, selecione apenas arquivos de imagem válidos.');
+        return;
+      }
+      if (file.size > 10 * 1024 * 1024) {
+        setErrorMsg('A imagem é muito grande. O limite máximo é de 10 MB para evitar lentidão e falhas.');
+        return;
+      }
+
+      if (imagePreview) {
+        URL.revokeObjectURL(imagePreview);
+      }
+
       setSelectedFile(file);
       setImagePreview(URL.createObjectURL(file));
       setErrorMsg(null);
@@ -46,12 +69,28 @@ export const MealCreator: React.FC<MealCreatorProps> = ({
   };
 
   const triggerCamera = () => {
+    if (isAnalyzing) return; // impede clique duplo/simultâneo
+    
+    // Verifica rate limit antes de abrir câmera
+    const rateStatus = getRateLimitStatus();
+    if (rateStatus.isBlocked) {
+      setErrorMsg(`Limite de segurança excedido. O app bloqueou novas requisições temporariamente. Aguarde ${rateStatus.resetTimeSeconds} segundos.`);
+      return;
+    }
+    
     fileInputRef.current?.click();
   };
 
   const analyzePhoto = async (file: File) => {
     if (!apiKey) {
       setErrorMsg('Por favor, configure sua chave de API nas configurações primeiro.');
+      return;
+    }
+
+    // Validação preventiva do Rate Limit
+    const rateStatus = getRateLimitStatus();
+    if (rateStatus.isBlocked) {
+      setErrorMsg(`Limite de segurança excedido. Aguarde ${rateStatus.resetTimeSeconds} segundos para enviar novas chamadas de API.`);
       return;
     }
 
@@ -118,6 +157,12 @@ export const MealCreator: React.FC<MealCreatorProps> = ({
     if (!currentAnalysis) return;
     
     setItems([...items, currentAnalysis]);
+    
+    // Libera a URL antiga do preview de imagem da memória RAM do iOS
+    if (imagePreview) {
+      URL.revokeObjectURL(imagePreview);
+    }
+    
     // Reseta o estado para a próxima pesagem
     setSelectedFile(null);
     setImagePreview(null);
@@ -235,14 +280,21 @@ export const MealCreator: React.FC<MealCreatorProps> = ({
       )}
 
       {/* Image Uploader Interface */}
+      {getRateLimitStatus().isBlocked && (
+        <div style={{ background: 'rgba(245, 158, 11, 0.1)', border: '1px solid rgba(245, 158, 11, 0.25)', padding: '12px', borderRadius: '12px', color: 'var(--color-fat)', fontSize: '13px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <AlertCircle size={16} />
+          <span>Limite de requisições ativo. Aguarde {getRateLimitStatus().resetTimeSeconds}s para a liberação.</span>
+        </div>
+      )}
+      
       {!selectedFile ? (
-        <div className="photo-uploader" onClick={triggerCamera}>
+        <div className="photo-uploader" onClick={triggerCamera} style={{ opacity: getRateLimitStatus().isBlocked ? 0.6 : 1, cursor: getRateLimitStatus().isBlocked ? 'not-allowed' : 'pointer' }}>
           <div style={{ background: 'rgba(79, 70, 229, 0.1)', padding: '16px', borderRadius: '50%', color: 'var(--accent-light)' }}>
             <Camera size={32} />
           </div>
           <div style={{ textAlign: 'center' }}>
             <p style={{ fontWeight: 600, color: 'white', fontSize: '15px' }}>Bater foto da comida + balança</p>
-            <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>A IA lerá o peso da balança e identificará o alimento</p>
+            <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>{getRateLimitStatus().isBlocked ? 'Aguarde o rate-limit para liberar' : 'A IA lerá o peso da balança e identificará o alimento'}</p>
           </div>
         </div>
       ) : (
@@ -353,6 +405,9 @@ export const MealCreator: React.FC<MealCreatorProps> = ({
             <button 
               className="btn btn-secondary" 
               onClick={() => {
+                if (imagePreview) {
+                  URL.revokeObjectURL(imagePreview);
+                }
                 setSelectedFile(null);
                 setImagePreview(null);
                 setCurrentAnalysis(null);

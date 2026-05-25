@@ -1,8 +1,42 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Bot, Trash2, Loader2 } from 'lucide-react';
-import { chatWithNutritionist } from '../services/gemini';
+import { Send, Bot, Trash2, Loader2, AlertCircle } from 'lucide-react';
+import { chatWithNutritionist, getRateLimitStatus } from '../services/gemini';
 import type { ChatMessage } from '../services/gemini';
 import { getChatHistory, saveChatHistory } from '../services/db';
+
+// Parser seguro de markdown para negritos e quebras de linha sem injeção perigosa de HTML (XSS Safe)
+function formatMessageText(text: string): React.ReactNode {
+  if (!text) return '';
+  const lines = text.split('\n');
+  return lines.map((line, lineIdx) => {
+    const parts = [];
+    const boldRegex = /\*\*([^*]+)\*\*/g;
+    let match;
+    let lastIndex = 0;
+    let partKey = 0;
+
+    while ((match = boldRegex.exec(line)) !== null) {
+      const matchIndex = match.index;
+      const boldText = match[1];
+
+      if (matchIndex > lastIndex) {
+        parts.push(<span key={`t-${partKey++}`}>{line.substring(lastIndex, matchIndex)}</span>);
+      }
+      parts.push(<strong key={`b-${partKey++}`} style={{ fontWeight: 700, color: 'inherit' }}>{boldText}</strong>);
+      lastIndex = boldRegex.lastIndex;
+    }
+
+    if (lastIndex < line.length) {
+      parts.push(<span key={`t-${partKey++}`}>{line.substring(lastIndex)}</span>);
+    }
+
+    return (
+      <div key={lineIdx} style={{ minHeight: '18px' }}>
+        {parts.length > 0 ? parts : <br />}
+      </div>
+    );
+  });
+}
 
 interface MealItem {
   foodName: string;
@@ -81,6 +115,13 @@ export const Chat: React.FC<ChatProps> = ({
 
     if (!apiKey) {
       alert('Por favor, configure sua chave de API nas Configurações antes de conversar.');
+      return;
+    }
+
+    // Validação preventiva do Rate Limit no Chat
+    const rateStatus = getRateLimitStatus();
+    if (rateStatus.isBlocked) {
+      alert(`Limite de segurança excedido. O app bloqueou temporariamente novas chamadas de API. Aguarde ${rateStatus.resetTimeSeconds} segundos antes de tentar novamente.`);
       return;
     }
 
@@ -208,12 +249,11 @@ export const Chat: React.FC<ChatProps> = ({
                 color: 'white',
                 fontSize: '14px',
                 lineHeight: '1.4',
-                whiteSpace: 'pre-wrap',
                 userSelect: 'text',
                 boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
               }}
             >
-              {msg.text}
+              {formatMessageText(msg.text)}
             </div>
           </div>
         ))}
@@ -240,6 +280,14 @@ export const Chat: React.FC<ChatProps> = ({
         <div ref={messagesEndRef} />
       </div>
 
+      {/* Rate Limit Warning Box */}
+      {getRateLimitStatus().isBlocked && (
+        <div style={{ background: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.18)', padding: '8px 12px', borderRadius: '10px', color: 'var(--color-fat)', fontSize: '12px', display: 'flex', gap: '6px', alignItems: 'center', flexShrink: 0, marginBottom: '6px' }}>
+          <AlertCircle size={14} />
+          <span>Rate limit ativo. Envio de novas mensagens liberado em {getRateLimitStatus().resetTimeSeconds} segundos.</span>
+        </div>
+      )}
+
       {/* Input Form Box */}
       <form 
         onSubmit={handleSend}
@@ -256,9 +304,9 @@ export const Chat: React.FC<ChatProps> = ({
           className="form-input"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Ex: Quantas kcal comi hoje? Faltam quantos g de proteína?"
-          style={{ flex: 1, padding: '12px 16px', fontSize: '14px', borderRadius: '24px', userSelect: 'text' }}
-          disabled={isSending}
+          placeholder={getRateLimitStatus().isBlocked ? "Aguardando liberação de taxa..." : "Ex: Quantas kcal comi hoje? Faltam quantos g de proteína?"}
+          style={{ flex: 1, padding: '12px 16px', fontSize: '14px', borderRadius: '24px', userSelect: 'text', opacity: getRateLimitStatus().isBlocked ? 0.6 : 1 }}
+          disabled={isSending || getRateLimitStatus().isBlocked}
         />
         <button 
           type="submit" 
@@ -272,12 +320,12 @@ export const Chat: React.FC<ChatProps> = ({
             alignItems: 'center', 
             justifyContent: 'center',
             flexShrink: 0,
-            backgroundColor: input.trim() ? 'var(--accent)' : 'var(--bg-card)',
-            color: input.trim() ? 'white' : 'var(--text-muted)',
+            backgroundColor: (input.trim() && !getRateLimitStatus().isBlocked) ? 'var(--accent)' : 'var(--bg-card)',
+            color: (input.trim() && !getRateLimitStatus().isBlocked) ? 'white' : 'var(--text-muted)',
             boxShadow: 'none',
-            border: input.trim() ? 'none' : '1px solid var(--border-color)',
+            border: (input.trim() && !getRateLimitStatus().isBlocked) ? 'none' : '1px solid var(--border-color)',
           }}
-          disabled={!input.trim() || isSending}
+          disabled={!input.trim() || isSending || getRateLimitStatus().isBlocked}
         >
           <Send size={18} />
         </button>

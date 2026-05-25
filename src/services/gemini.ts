@@ -36,11 +36,17 @@ export const fileToGenerativePart = (file: File): Promise<{ inlineData: { data: 
   });
 };
 
+export interface RateLimitStatus {
+  isBlocked: boolean;
+  remainingCalls: number;
+  limit: number;
+  resetTimeSeconds: number;
+}
+
 /**
- * Verifica e atualiza o limite de requisições do usuário (Max 10 req/min)
- * para evitar rate limiting ou suspensão de chaves gratuitas na Google.
+ * Retorna o status atual do rate limit local no cliente.
  */
-function checkRateLimit(): void {
+export function getRateLimitStatus(): RateLimitStatus {
   const limit = 10;
   const windowMs = 60 * 1000;
   const now = Date.now();
@@ -58,10 +64,48 @@ function checkRateLimit(): void {
   
   timestamps = timestamps.filter(t => now - t < windowMs);
   
-  if (timestamps.length >= limit) {
-    throw new Error(`Limite de segurança excedido. O app bloqueou temporariamente novas chamadas para evitar suspensão da sua chave de API (máximo ${limit} requisições por minuto). Aguarde um instante.`);
+  const isBlocked = timestamps.length >= limit;
+  const remainingCalls = Math.max(0, limit - timestamps.length);
+  
+  let resetTimeSeconds = 0;
+  if (timestamps.length > 0) {
+    const oldestTimestamp = timestamps[0];
+    const timePassed = now - oldestTimestamp;
+    resetTimeSeconds = Math.ceil(Math.max(0, windowMs - timePassed) / 1000);
   }
   
+  return {
+    isBlocked,
+    remainingCalls,
+    limit,
+    resetTimeSeconds
+  };
+}
+
+/**
+ * Verifica e atualiza o limite de requisições do usuário (Max 10 req/min)
+ * para evitar rate limiting ou suspensão de chaves gratuitas na Google.
+ */
+function checkRateLimit(): void {
+  const status = getRateLimitStatus();
+  if (status.isBlocked) {
+    throw new Error(`Limite de segurança excedido. O app bloqueou temporariamente novas chamadas para evitar suspensão da sua chave de API (máximo ${status.limit} requisições por minuto). Aguarde ${status.resetTimeSeconds} segundos.`);
+  }
+  
+  const now = Date.now();
+  const savedCalls = localStorage.getItem('nutri_api_call_timestamps');
+  let timestamps: number[] = [];
+  
+  if (savedCalls) {
+    try {
+      timestamps = JSON.parse(savedCalls);
+    } catch (e) {
+      timestamps = [];
+    }
+  }
+  
+  const windowMs = 60 * 1000;
+  timestamps = timestamps.filter(t => now - t < windowMs);
   timestamps.push(now);
   localStorage.setItem('nutri_api_call_timestamps', JSON.stringify(timestamps));
 }
@@ -136,7 +180,7 @@ Responda rigorosamente seguindo o seguinte formato de objeto JSON:
 `;
 
   // Construção do payload da API do Gemini
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
 
   const payload = {
     contents: [
@@ -189,14 +233,14 @@ Responda rigorosamente seguindo o seguinte formato de objeto JSON:
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey,
       },
       body: JSON.stringify(payload),
     });
 
     if (!response.ok) {
-      const errText = await response.text();
-      console.error('Erro na chamada da API do Gemini:', errText);
-      throw new Error(`Erro na API (${response.status}): ${response.statusText}`);
+      console.error('Erro na chamada da API do Gemini (status:', response.status, ')');
+      throw new Error(`Erro na API (${response.status}): Ocorreu uma falha na análise. Verifique sua chave de API.`);
     }
 
     const data = await response.json();
@@ -252,7 +296,7 @@ export async function chatWithNutritionist(
 
   checkRateLimit();
 
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
 
   // Formata o histórico de refeições do usuário de forma legível para a IA
   const mealsText = mealsHistory.length > 0
@@ -317,13 +361,14 @@ Requisitos da resposta:
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey,
       },
       body: JSON.stringify(payload),
     });
 
     if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`Erro na API (${response.status}): ${errText || response.statusText}`);
+      console.error('Erro na chamada de chat com Gemini (status:', response.status, ')');
+      throw new Error(`Erro na API (${response.status}): Ocorreu uma falha no chat. Verifique sua conexão e chave de API.`);
     }
 
     const data = await response.json();
