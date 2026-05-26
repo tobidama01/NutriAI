@@ -426,7 +426,7 @@ export async function getSettingsFromDB(): Promise<DBSettings | null> {
           weight: 75.0,
           height: 175.0,
           gemini_api_key: null,
-          model_name: 'gemini-2.0-flash',
+          model_name: 'gemini-2.5-flash',
           custom_context: '',
           targets: { calories: 2000, carbs: 200, protein: 120, fat: 60, fiber: 25, sodium: 2000 }
         };
@@ -434,7 +434,7 @@ export async function getSettingsFromDB(): Promise<DBSettings | null> {
         
         return {
           apiKey: '',
-          modelName: 'gemini-2.0-flash',
+          modelName: 'gemini-2.5-flash',
           customContext: '',
           targets: defaultSettings.targets,
           weight: 75,
@@ -447,7 +447,7 @@ export async function getSettingsFromDB(): Promise<DBSettings | null> {
       if (data) {
         const settings: DBSettings = {
           apiKey: data.gemini_api_key || '',
-          modelName: data.model_name || 'gemini-2.0-flash',
+          modelName: data.model_name || 'gemini-2.5-flash',
           customContext: data.custom_context || '',
           targets: data.targets || { calories: 2000, carbs: 200, protein: 120, fat: 60, fiber: 25, sodium: 2000 },
           weight: data.weight ? Number(data.weight) : 75,
@@ -642,7 +642,7 @@ export async function clearAllDBData(): Promise<void> {
           weight: 75.0,
           height: 175.0,
           gemini_api_key: null,
-          model_name: 'gemini-2.0-flash',
+          model_name: 'gemini-2.5-flash',
           custom_context: '',
           targets: { calories: 2000, carbs: 200, protein: 120, fat: 60, fiber: 25, sodium: 2000 }
         }).eq('id', userId)

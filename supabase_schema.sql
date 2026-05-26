@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS public.profiles (
   weight NUMERIC DEFAULT 75.0,
   height NUMERIC DEFAULT 175.0,
   gemini_api_key TEXT,
-  model_name TEXT DEFAULT 'gemini-2.0-flash',
+  model_name TEXT DEFAULT 'gemini-2.5-flash',
   custom_context TEXT DEFAULT '',
   targets JSONB DEFAULT '{"calories": 2000, "carbs": 200, "protein": 120, "fat": 60, "fiber": 25, "sodium": 2000}'::jsonb
 );
@@ -44,7 +44,7 @@ BEGIN
     75.0,
     175.0,
     NULL,
-    'gemini-2.0-flash',
+    'gemini-2.5-flash',
     '',
     '{"calories": 2000, "carbs": 200, "protein": 120, "fat": 60, "fiber": 25, "sodium": 2000}'::jsonb
   )

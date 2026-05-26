@@ -56,7 +56,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [activeTab, setActiveTab] = useState<TabName>(savedTab || 'dashboard');
   
   const [apiKey, setApiKey] = useState<string>('');
-  const [modelName, setModelName] = useState<string>('gemini-2.0-flash');
+  const [modelName, setModelName] = useState<string>('gemini-2.5-flash');
   const [customContext, setCustomContext] = useState<string>('');
   const [targets, setTargets] = useState<NutritionTargets>({
     calories: 2000,
@@ -96,7 +96,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const dbSettings = await getSettingsFromDB();
       if (dbSettings) {
         setApiKey(dbSettings.apiKey || '');
-        setModelName(dbSettings.modelName || 'gemini-2.0-flash');
+        setModelName(dbSettings.modelName || 'gemini-2.5-flash');
         setCustomContext(dbSettings.customContext || '');
         setWeight(dbSettings.weight ?? 75);
         setHeight(dbSettings.height ?? 175);
@@ -210,7 +210,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       } else {
         // Se deslogar, limpa a memória para segurança do usuário
         setApiKey('');
-        setModelName('gemini-2.0-flash');
+        setModelName('gemini-2.5-flash');
         setCustomContext('');
         setWeight(75);
         setHeight(175);
@@ -322,7 +322,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     localStorage.clear();
     sessionStorage.clear();
     setApiKey('');
-    setModelName('gemini-2.0-flash');
+    setModelName('gemini-2.5-flash');
     setCustomContext('');
     setWeight(75);
     setHeight(175);

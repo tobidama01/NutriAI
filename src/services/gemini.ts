@@ -202,7 +202,7 @@ export async function analyzeFoodImage(
   imageFile: File,
   apiKey: string,
   existingItems: ExistingMealItem[] = [],
-  modelName: string = 'gemini-2.0-flash',
+  modelName: string = 'gemini-2.5-flash',
   userNotes: string = '',
   customContext: string = ''
 ): Promise<GeminiAnalysisResult> {
@@ -362,7 +362,7 @@ export async function chatWithNutritionist(
   mealsHistory: ChatMealSummary[],
   targets: { calories: number; carbs: number; protein: number; fat: number; fiber?: number; sodium?: number },
   customContext: string = '',
-  modelName: string = 'gemini-2.0-flash'
+  modelName: string = 'gemini-2.5-flash'
 ): Promise<string> {
   if (!apiKey) {
     throw new Error('Chave de API do Gemini não configurada.');
@@ -512,7 +512,7 @@ export async function calculateWorkoutCalories(
   heightCm: number,
   workoutNotes: string,
   cardioNotes: string,
-  modelName: string = 'gemini-2.0-flash'
+  modelName: string = 'gemini-2.5-flash'
 ): Promise<WorkoutAnalysisResult> {
   if (!apiKey) {
     throw new Error('Chave de API do Gemini não configurada.');
@@ -636,7 +636,7 @@ export interface ExtractedMealsResult {
 export async function extractMealsFromChatHistory(
   apiKey: string,
   chatText: string,
-  modelName: string = 'gemini-2.0-flash'
+  modelName: string = 'gemini-2.5-flash'
 ): Promise<ExtractedMealsResult> {
   if (!apiKey) {
     throw new Error('Chave de API do Gemini não configurada.');

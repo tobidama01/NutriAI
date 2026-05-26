@@ -355,11 +355,11 @@ export const Settings: React.FC<SettingsProps> = ({
               value={localModel}
               onChange={(e) => setLocalModel(e.target.value)}
             >
-              <option value="gemini-2.0-flash">Gemini 2.0 Flash (Rápido - Recomendado)</option>
-              <option value="gemini-2.0-flash-thinking-exp">Gemini 2.0 Flash Thinking (Raciocínio)</option>
+              <option value="gemini-2.5-flash">Gemini 2.5 Flash (Rápido - Recomendado)</option>
+              <option value="gemini-3.5-flash">Gemini 3.5 Flash (Nova Geração)</option>
+              <option value="gemini-2.0-flash">Gemini 2.0 Flash (Legado)</option>
               <option value="gemini-1.5-flash">Gemini 1.5 Flash (Estável)</option>
               <option value="gemini-1.5-pro">Gemini 1.5 Pro (Alta Precisão)</option>
-              <option value="gemini-2.5-pro-preview-06-05">Gemini 2.5 Pro Preview (Experimental)</option>
             </select>
           </div>
         </div>
