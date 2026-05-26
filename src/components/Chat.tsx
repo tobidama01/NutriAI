@@ -40,7 +40,7 @@ function formatMessageText(text: string): React.ReactNode {
 }
 
 export const Chat: React.FC = () => {
-  const { apiKey, modelName, meals, targets, customContext } = useApp();
+  const { apiKey, modelName, meals, targets, customContext, saveExtractedMeals } = useApp();
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -151,10 +151,28 @@ export const Chat: React.FC = () => {
         modelName
       );
 
+      // Processamento de sincronização automática de macros do chat (<sync_macros>)
+      const syncRegex = /<sync_macros>([\s\S]*?)<\/sync_macros>/i;
+      const match = reply.match(syncRegex);
+      let textToShow = reply;
+
+      if (match) {
+        textToShow = reply.replace(syncRegex, '').trim();
+        const jsonText = match[1].trim();
+        try {
+          const parsed = JSON.parse(jsonText);
+          if (parsed && Array.isArray(parsed.meals)) {
+            await saveExtractedMeals(parsed.meals);
+          }
+        } catch (jsonErr) {
+          console.error('Erro ao interpretar JSON de sincronização automática de macros:', jsonErr);
+        }
+      }
+
       const newAiMsg: ChatMessage = {
         id: crypto.randomUUID(), // Corrigido bug de IDs duplicados
         sender: 'ai',
-        text: reply,
+        text: textToShow,
         timestamp: Date.now(),
       };
 

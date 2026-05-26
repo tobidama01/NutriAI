@@ -427,6 +427,35 @@ Requisitos da resposta:
 4. Use markdown simples para formatação (ex: negritos).
 5. Mantenha a atitude empática de um nutricionista de futebol/esportes.
 6. Não invente refeições que não estão na lista de histórico, baseie-se estritamente nos fatos informados.
+7. SINCRONIZAÇÃO AUTOMÁTICA DE MACROS (<sync_macros>): Se o usuário descrever alimentos que consumiu HOJE, ou se pedir para sincronizar/atualizar os macros de hoje baseado na conversa ou no histórico/txt importado recentemente, analise o texto e gere a estrutura de refeição correspondente. Você deve anexar esta estrutura no final da sua resposta, delimitada pela tag <sync_macros>...</sync_macros> no seguinte formato exato:
+
+<sync_macros>
+{
+  "meals": [
+    {
+      "type": "Almoço", // Deve ser exatamente: "Café da Manhã" | "Almoço" | "Jantar" | "Lanche"
+      "timestamp": ${new Date().setHours(12, 30, 0, 0)}, // timestamp em milissegundos correspondente ao horário aproximado da refeição HOJE
+      "items": [
+        {
+          "foodName": "Nome do alimento",
+          "weightGrams": 150,
+          "calories": 200,
+          "protein": 5,
+          "carbs": 40,
+          "fat": 1,
+          "fiber": 2,
+          "sodium": 150
+        }
+      ]
+    }
+  ]
+}
+</sync_macros>
+
+Importante:
+- Somente anexe a tag <sync_macros> se o usuário relatar consumo de alimentos hoje ou pedir explicitamente para puxar as informações de hoje da conversa/txt.
+- Estime gramaturas e valores calóricos realistas caso não detalhado.
+- Se a conversa for apenas teórica ou sobre outros assuntos, NÃO inclua a tag <sync_macros>.
 `;
 
   const payload = {

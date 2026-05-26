@@ -11,7 +11,7 @@ import {
   saveWorkout,
   deleteWorkoutFromDB
 } from '../services/db';
-import { extractMealsFromChatHistory } from '../services/gemini';
+import { extractMealsFromChatHistory, type ExtractedMeal } from '../services/gemini';
 import { logger } from '../utils/logger';
 
 interface AppContextValue {
@@ -39,6 +39,7 @@ interface AppContextValue {
   handleClearData: () => Promise<void>;
   saveSettings: (key: string, model: string, context: string, targets: NutritionTargets, weight: number, height: number) => Promise<void>;
   handleImportMealsFromText: (text: string) => Promise<number>;
+  saveExtractedMeals: (extractedMeals: ExtractedMeal[]) => Promise<number>;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -330,6 +331,39 @@ export function AppProvider({ children }: { children: ReactNode }) {
     localStorage.setItem('nutri_height', newHeight.toString());
   };
 
+  const saveExtractedMeals = async (extractedMeals: ExtractedMeal[]): Promise<number> => {
+    if (extractedMeals.length === 0) {
+      return 0;
+    }
+
+    const importedMeals: Meal[] = extractedMeals.map(extracted => ({
+      id: crypto.randomUUID(),
+      timestamp: extracted.timestamp || Date.now(),
+      type: extracted.type as any,
+      items: extracted.items.map(item => ({
+        foodName: item.foodName,
+        weightGrams: item.weightGrams,
+        calories: item.calories,
+        protein: item.protein,
+        carbs: item.carbs,
+        fat: item.fat,
+        fiber: item.fiber,
+        sodium: item.sodium
+      }))
+    }));
+
+    // Salva no IndexedDB de forma segura concorrente
+    await Promise.all(importedMeals.map(meal => saveMeal(meal)));
+
+    // Atualiza o estado das refeições localmente
+    setMeals(prev => {
+      const merged = [...importedMeals, ...prev];
+      return merged.sort((a, b) => b.timestamp - a.timestamp);
+    });
+
+    return importedMeals.length;
+  };
+
   const handleImportMealsFromText = async (chatText: string): Promise<number> => {
     if (!apiKey) {
       throw new Error('Chave de API do Gemini não configurada.');
@@ -340,33 +374,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!result.meals || result.meals.length === 0) {
         return 0;
       }
-
-      const importedMeals: Meal[] = result.meals.map(extracted => ({
-        id: crypto.randomUUID(),
-        timestamp: extracted.timestamp || Date.now(),
-        type: extracted.type as any,
-        items: extracted.items.map(item => ({
-          foodName: item.foodName,
-          weightGrams: item.weightGrams,
-          calories: item.calories,
-          protein: item.protein,
-          carbs: item.carbs,
-          fat: item.fat,
-          fiber: item.fiber,
-          sodium: item.sodium
-        }))
-      }));
-
-      // Salva no IndexedDB de forma segura concorrente
-      await Promise.all(importedMeals.map(meal => saveMeal(meal)));
-
-      // Atualiza o estado das refeições localmente
-      setMeals(prev => {
-        const merged = [...importedMeals, ...prev];
-        return merged.sort((a, b) => b.timestamp - a.timestamp);
-      });
-
-      return importedMeals.length;
+      return await saveExtractedMeals(result.meals);
     } catch (err) {
       logger.error('Erro ao importar refeições automáticas do texto', err);
       throw err;
@@ -399,7 +407,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         handleDeleteWorkout,
         handleClearData,
         saveSettings,
-        handleImportMealsFromText
+        handleImportMealsFromText,
+        saveExtractedMeals
       }}
     >
       {children}
