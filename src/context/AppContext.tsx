@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useRef, type ReactNode } from 'react';
 import type { Meal, NutritionTargets, TabName, Workout } from '../types';
 import { 
   getMeals, 
@@ -11,6 +11,7 @@ import {
   saveWorkout,
   deleteWorkoutFromDB
 } from '../services/db';
+import { supabase, isSupabaseConfigured } from '../services/supabaseClient';
 import { extractMealsFromChatHistory, type ExtractedMeal } from '../services/gemini';
 import { logger } from '../utils/logger';
 
@@ -40,6 +41,12 @@ interface AppContextValue {
   saveSettings: (key: string, model: string, context: string, targets: NutritionTargets, weight: number, height: number) => Promise<void>;
   handleImportMealsFromText: (text: string) => Promise<number>;
   saveExtractedMeals: (extractedMeals: ExtractedMeal[]) => Promise<number>;
+  
+  // Supabase Auth Integration
+  session: any;
+  user: any;
+  logout: () => Promise<void>;
+  loadAllData: () => Promise<void>;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -60,7 +67,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     sodium: 2000
   });
   
-  // Dados de peso e altura (item 4.1)
   const [weight, setWeight] = useState<number>(75);
   const [height, setHeight] = useState<number>(175);
   
@@ -68,125 +74,171 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [workouts, setWorkouts] = useState<Workout[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
+  // Estados de Sessão do Supabase
+  const [session, setSession] = useState<any>(null);
+  const [user, setUser] = useState<any>(null);
+
   const setActiveTabPersisted = (tab: TabName) => {
     setActiveTab(tab);
     sessionStorage.setItem('nutri_active_tab', tab);
   };
 
-  // Carrega os dados salvos do IndexedDB ao iniciar o app (com fallback para localStorage)
+  // Mantém uma referência atualizada do estado local na memória para migração
+  const stateRef = useRef({ apiKey, weight, height, modelName, customContext, targets, meals, workouts });
   useEffect(() => {
-    async function loadData() {
-      try {
-        const dbSettings = await getSettingsFromDB();
-        let currentWeight = 75;
-        let currentHeight = 175;
+    stateRef.current = { apiKey, weight, height, modelName, customContext, targets, meals, workouts };
+  }, [apiKey, weight, height, modelName, customContext, targets, meals, workouts]);
+
+  // Carrega todos os dados do banco de dados (pode ser Supabase ou IndexedDB dependendo da sessão)
+  const loadAllData = async () => {
+    setIsLoading(true);
+    try {
+      const dbSettings = await getSettingsFromDB();
+      if (dbSettings) {
+        setApiKey(dbSettings.apiKey || '');
+        setModelName(dbSettings.modelName || 'gemini-2.0-flash');
+        setCustomContext(dbSettings.customContext || '');
+        setWeight(dbSettings.weight ?? 75);
+        setHeight(dbSettings.height ?? 175);
         
-        if (dbSettings) {
-          setApiKey(dbSettings.apiKey || '');
-          setModelName(dbSettings.modelName || 'gemini-2.0-flash');
-          setCustomContext(dbSettings.customContext || '');
-          currentWeight = dbSettings.weight ?? 75;
-          currentHeight = dbSettings.height ?? 175;
-          setWeight(currentWeight);
-          setHeight(currentHeight);
-          
-          if (dbSettings.targets) {
-            setTargets({
-              calories: dbSettings.targets.calories ?? 2000,
-              carbs: dbSettings.targets.carbs ?? 200,
-              protein: dbSettings.targets.protein ?? 120,
-              fat: dbSettings.targets.fat ?? 60,
-              fiber: dbSettings.targets.fiber ?? 25,
-              sodium: dbSettings.targets.sodium ?? 2000
-            });
-          }
-        } else {
-          // Fallback para localStorage legado no primeiro acesso
-          const savedKey = localStorage.getItem('nutri_api_key') || '';
-          const savedModel = localStorage.getItem('nutri_model_name') || 'gemini-2.0-flash';
-          const savedContext = localStorage.getItem('nutri_custom_context') || '';
-          const savedTargets = localStorage.getItem('nutri_targets');
-          const savedWeight = localStorage.getItem('nutri_weight');
-          const savedHeight = localStorage.getItem('nutri_height');
-
-          if (savedWeight) {
-            currentWeight = parseFloat(savedWeight) || 75;
-            setWeight(currentWeight);
-          }
-          if (savedHeight) {
-            currentHeight = parseFloat(savedHeight) || 175;
-            setHeight(currentHeight);
-          }
-
-          let loadedTargets = { calories: 2000, carbs: 200, protein: 120, fat: 60, fiber: 25, sodium: 2000 };
-
-          if (savedKey) setApiKey(savedKey);
-          if (savedModel) setModelName(savedModel);
-          if (savedContext) setCustomContext(savedContext);
-          if (savedTargets) {
-            try {
-              const parsedTargets = JSON.parse(savedTargets);
-              loadedTargets = {
-                calories: parsedTargets.calories ?? 2000,
-                carbs: parsedTargets.carbs ?? 200,
-                protein: parsedTargets.protein ?? 120,
-                fat: parsedTargets.fat ?? 60,
-                fiber: parsedTargets.fiber ?? 25,
-                sodium: parsedTargets.sodium ?? 2000
-              };
-              setTargets(loadedTargets);
-            } catch (e) {
-              logger.error('Falha ao interpretar metas do localStorage', e);
-            }
-          }
-
-          // Salva no IndexedDB para migração segura
-          await saveSettingsToDB({
-            apiKey: savedKey,
-            modelName: savedModel,
-            customContext: savedContext,
-            targets: loadedTargets,
-            weight: currentWeight,
-            height: currentHeight
+        if (dbSettings.targets) {
+          setTargets({
+            calories: dbSettings.targets.calories ?? 2000,
+            carbs: dbSettings.targets.carbs ?? 200,
+            protein: dbSettings.targets.protein ?? 120,
+            fat: dbSettings.targets.fat ?? 60,
+            fiber: dbSettings.targets.fiber ?? 25,
+            sodium: dbSettings.targets.sodium ?? 2000
           });
-
-          // Remove chave da API do localStorage por motivos de segurança
-          localStorage.removeItem('nutri_api_key');
         }
+      }
 
-        // Carrega refeições
-        const dbMeals = await getMeals();
-        if (dbMeals && dbMeals.length > 0) {
-          setMeals(dbMeals);
-        } else {
-          // Migração do localStorage de refeições legadas
-          const savedMeals = localStorage.getItem('nutri_meals');
-          if (savedMeals) {
-            try {
-              const parsedMeals = JSON.parse(savedMeals);
-              setMeals(parsedMeals);
-              for (const m of parsedMeals) {
-                await saveMeal(m);
-              }
-            } catch (e) {
-              logger.error('Falha ao migrar refeições do localStorage', e);
+      // Carrega refeições
+      const dbMeals = await getMeals();
+      setMeals(dbMeals || []);
+
+      // Carrega treinos (workouts)
+      const dbWorkouts = await getWorkouts();
+      setWorkouts(dbWorkouts || []);
+    } catch (err) {
+      logger.error('Erro ao ler dados do banco no AppProvider:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Inicialização e Monitoramento de Sessão do Supabase
+  useEffect(() => {
+    if (!isSupabaseConfigured) {
+      // Caso não esteja configurado, apenas carrega do IndexedDB
+      loadAllData();
+      return;
+    }
+
+    // Carrega sessão atual no início
+    supabase.auth.getSession().then(({ data: { session } }: any) => {
+      setSession(session);
+      setUser(session?.user ?? null);
+      loadAllData();
+    });
+
+    // Escuta mudanças de sessão
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event: any, session: any) => {
+      setSession(session);
+      setUser(session?.user ?? null);
+
+      if (session) {
+        const userId = session.user.id;
+        const localData = stateRef.current;
+
+        // Migração de dados locais caso o usuário logado ainda não tenha dados no Supabase
+        try {
+          // 1. Migração do Perfil
+          const { data: profile } = await supabase.from('profiles').select('*').eq('id', userId).single();
+          if (profile && !profile.gemini_api_key && localData.apiKey) {
+            await supabase.from('profiles').update({
+              gemini_api_key: localData.apiKey,
+              weight: localData.weight,
+              height: localData.height,
+              model_name: localData.modelName,
+              custom_context: localData.customContext,
+              targets: localData.targets
+            }).eq('id', userId);
+          }
+
+          // 2. Migração de Refeições
+          if (localData.meals.length > 0) {
+            const { data: remoteMeals } = await supabase.from('meals').select('id').eq('user_id', userId).limit(1);
+            if (!remoteMeals || remoteMeals.length === 0) {
+              const mealsToInsert = localData.meals.map(m => ({
+                id: m.id,
+                user_id: userId,
+                timestamp: m.timestamp,
+                type: m.type,
+                items: m.items
+              }));
+              await supabase.from('meals').insert(mealsToInsert);
             }
           }
+
+          // 3. Migração de Treinos
+          if (localData.workouts.length > 0) {
+            const { data: remoteWorkouts } = await supabase.from('workouts').select('id').eq('user_id', userId).limit(1);
+            if (!remoteWorkouts || remoteWorkouts.length === 0) {
+              const workoutsToInsert = localData.workouts.map(w => ({
+                id: w.id,
+                user_id: userId,
+                timestamp: w.timestamp,
+                weight_kg: w.weightKg,
+                height_cm: w.heightCm,
+                workout_notes: w.workoutNotes,
+                cardio_notes: w.cardioNotes,
+                calories_burned_workout: w.caloriesBurnedWorkout,
+                calories_burned_cardio: w.caloriesBurnedCardio,
+                total_daily_expenditure: w.totalDailyExpenditure,
+                ia_explanation: w.iaExplanation
+              }));
+              await supabase.from('workouts').insert(workoutsToInsert);
+            }
+          }
+        } catch (err) {
+          logger.error('Erro na migração automática para Supabase:', err);
         }
 
-        // Carrega treinos (workouts)
-        const dbWorkouts = await getWorkouts();
-        if (dbWorkouts && dbWorkouts.length > 0) {
-          setWorkouts(dbWorkouts);
-        }
-      } catch (err) {
-        logger.error('Erro no carregamento inicial do banco IndexedDB', err);
-      } finally {
+        // Recarrega todos os dados
+        await loadAllData();
+      } else {
+        // Se deslogar, limpa a memória para segurança do usuário
+        setApiKey('');
+        setModelName('gemini-2.0-flash');
+        setCustomContext('');
+        setWeight(75);
+        setHeight(175);
+        setTargets({
+          calories: 2000,
+          carbs: 200,
+          protein: 120,
+          fat: 60,
+          fiber: 25,
+          sodium: 2000
+        });
+        setMeals([]);
+        setWorkouts([]);
         setIsLoading(false);
       }
-    }
-    loadData();
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
   }, []);
+
+  const logout = async () => {
+    if (isSupabaseConfigured) {
+      setIsLoading(true);
+      await supabase.auth.signOut();
+    }
+  };
 
   const handleSaveMeal = async (mealType: string, items: Meal['items']) => {
     const newMeal: Meal = {
@@ -202,7 +254,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     try {
       await saveMeal(newMeal);
     } catch (e) {
-      logger.error('Erro ao salvar refeição no IndexedDB', e);
+      logger.error('Erro ao salvar refeição', e);
       throw e;
     }
   };
@@ -213,12 +265,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     try {
       await deleteMealFromDB(id);
     } catch (e) {
-      logger.error('Erro ao deletar refeição no IndexedDB', e);
+      logger.error('Erro ao deletar refeição', e);
       throw e;
     }
   };
 
-  // Operações de Treinos
   const handleSaveWorkout = async (
     workoutNotes: string,
     cardioNotes: string,
@@ -246,7 +297,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     try {
       await saveWorkout(newWorkout);
     } catch (e) {
-      logger.error('Erro ao salvar treino no IndexedDB', e);
+      logger.error('Erro ao salvar treino', e);
       throw e;
     }
   };
@@ -257,7 +308,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     try {
       await deleteWorkoutFromDB(id);
     } catch (e) {
-      logger.error('Erro ao deletar treino no IndexedDB', e);
+      logger.error('Erro ao deletar treino', e);
       throw e;
     }
   };
@@ -266,7 +317,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     try {
       await clearAllDBData();
     } catch (e) {
-      logger.error('Erro ao limpar banco de dados IndexedDB', e);
+      logger.error('Erro ao limpar banco de dados', e);
     }
     localStorage.clear();
     sessionStorage.clear();
@@ -320,7 +371,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         height: newHeight
       });
     } catch (err) {
-      logger.error('Erro ao salvar configurações no IndexedDB', err);
+      logger.error('Erro ao salvar configurações', err);
       throw err;
     }
 
@@ -340,12 +391,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       let ts = Number(extracted.timestamp);
       const now = Date.now();
       
-      // Valida se o timestamp é um número válido e está na janela de hoje (meia-noite de hoje até 23:59:59)
       const startOfToday = new Date().setHours(0, 0, 0, 0);
       const endOfToday = new Date().setHours(23, 59, 59, 999);
       
       if (isNaN(ts) || ts < startOfToday || ts > endOfToday) {
-        // Fallback: se o timestamp não for de hoje, define para o momento atual (que é hoje)
         ts = now;
       }
 
@@ -366,10 +415,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       };
     });
 
-    // Salva no IndexedDB de forma segura concorrente
     await Promise.all(importedMeals.map(meal => saveMeal(meal)));
 
-    // Atualiza o estado das refeições localmente
     setMeals(prev => {
       const merged = [...importedMeals, ...prev];
       return merged.sort((a, b) => b.timestamp - a.timestamp);
@@ -379,18 +426,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const handleImportMealsFromText = async (chatText: string): Promise<number> => {
-    if (!apiKey) {
+    const activeKey = apiKey || import.meta.env.VITE_GEMINI_API_KEY;
+    if (!activeKey) {
       throw new Error('Chave de API do Gemini não configurada.');
     }
 
     try {
-      const result = await extractMealsFromChatHistory(apiKey, chatText, modelName);
+      const result = await extractMealsFromChatHistory(activeKey, chatText, modelName);
       if (!result.meals || result.meals.length === 0) {
         return 0;
       }
       return await saveExtractedMeals(result.meals);
     } catch (err) {
-      logger.error('Erro ao importar refeições automáticas do texto', err);
+      logger.error('Erro ao importar refeições do chat', err);
       throw err;
     }
   };
@@ -398,7 +446,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   return (
     <AppContext.Provider
       value={{
-        apiKey,
+        apiKey: apiKey || import.meta.env.VITE_GEMINI_API_KEY || '',
         setApiKey,
         modelName,
         setModelName,
@@ -422,7 +470,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         handleClearData,
         saveSettings,
         handleImportMealsFromText,
-        saveExtractedMeals
+        saveExtractedMeals,
+        
+        session,
+        user,
+        logout,
+        loadAllData
       }}
     >
       {children}

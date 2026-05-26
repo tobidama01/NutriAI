@@ -7,15 +7,31 @@ import { Settings } from './components/Settings';
 import { Chat } from './components/Chat';
 import { WorkoutCalculator } from './components/WorkoutCalculator';
 import { Toast } from './components/ui/Toast';
-import { useState } from 'react';
+import { Auth } from './components/Auth';
+import { useState, useEffect } from 'react';
 
 function App() {
-  const { activeTab, setActiveTab, isLoading, apiKey } = useApp();
+  const { activeTab, setActiveTab, isLoading, apiKey, session } = useApp();
   
   // Sistema de Toast Global (item 3.6)
   const [toastMessage, setToastMessage] = useState('');
   const [toastType, setToastType] = useState<'success' | 'error' | 'info'>('success');
   const [isToastVisible, setIsToastVisible] = useState(false);
+  const [isRecoveryMode, setIsRecoveryMode] = useState(false);
+
+  useEffect(() => {
+    // Detecta hash de redefinição de senha
+    const handleHashChange = () => {
+      const hash = window.location.hash;
+      if (hash.includes('type=recovery') || hash.includes('access_token=')) {
+        setIsRecoveryMode(true);
+      }
+    };
+
+    handleHashChange();
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
 
   const showToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
     setToastMessage(message);
@@ -84,6 +100,34 @@ function App() {
           <Loader2 size={40} style={{ animation: 'spin 1.5s linear infinite', color: 'var(--accent-light)' }} />
           <p style={{ color: 'var(--text-secondary)', fontSize: '14px', fontWeight: 500 }}>Carregando seus dados...</p>
         </div>
+      </div>
+    );
+  }
+
+  // Exibe a tela de login/registro se o usuário não estiver autenticado
+  // (ou se estiver no fluxo de redefinição de senha)
+  if (!session || isRecoveryMode) {
+    return (
+      <div 
+        className="app-container" 
+        style={{ 
+          display: 'flex', 
+          flexDirection: 'column', 
+          minHeight: '100vh', 
+          justifyContent: 'center', 
+          background: 'var(--bg-app)',
+          alignItems: 'center',
+          padding: '20px'
+        }}
+      >
+        <Auth 
+          onAuthSuccess={() => {
+            setIsRecoveryMode(false);
+            window.location.hash = ''; // Limpa os parâmetros de hash
+            showToast('Conectado com sucesso!', 'success');
+          }}
+          isRecoveryMode={isRecoveryMode}
+        />
       </div>
     );
   }

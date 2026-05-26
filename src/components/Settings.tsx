@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Key, Target, RefreshCw, Trash2, Sparkles, MessageSquare, HelpCircle, AlertCircle, Scale } from 'lucide-react';
+import { Key, Target, RefreshCw, Trash2, Sparkles, MessageSquare, HelpCircle, AlertCircle, Scale, LogOut } from 'lucide-react';
 import type { ChatMessage } from '../services/gemini';
 import { saveChatHistory } from '../services/db';
 import { useApp } from '../context/AppContext';
@@ -23,7 +23,9 @@ export const Settings: React.FC<SettingsProps> = ({
     height,
     saveSettings,
     handleClearData,
-    handleImportMealsFromText
+    handleImportMealsFromText,
+    user,
+    logout
   } = useApp();
 
   const [localKey, setLocalKey] = useState(apiKey);
@@ -553,6 +555,25 @@ export const Settings: React.FC<SettingsProps> = ({
           Salvar Alterações
         </button>
       </form>
+
+      {/* Conta do Usuário */}
+      {user && (
+        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <h2 style={{ fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <LogOut size={18} style={{ color: 'var(--accent-light)' }} /> Conta do Usuário
+          </h2>
+          <p style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+            Você está conectado como: <strong style={{ color: 'white' }}>{user.email}</strong>
+          </p>
+          <button 
+            className="btn btn-secondary" 
+            onClick={logout} 
+            style={{ display: 'flex', gap: '8px', padding: '12px', justifyContent: 'center' }}
+          >
+            Sair da Conta
+          </button>
+        </div>
+      )}
 
       {/* Danger Zone */}
       <div className="card" style={{ border: '1px solid rgba(239, 68, 68, 0.2)', display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '10px' }}>
