@@ -1,6 +1,7 @@
 import React from 'react';
-import { Camera, AlertCircle, TrendingUp, Calendar, Zap } from 'lucide-react';
+import { Camera, AlertCircle, TrendingUp, Calendar, Zap, RotateCcw } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import { ConfirmModal } from './ui/ConfirmModal';
 
 interface DashboardProps {
   onNavigateToCamera: () => void;
@@ -11,7 +12,17 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onNavigateToCamera,
   apiKeyMissing,
 }) => {
-  const { meals, targets } = useApp();
+  const { meals, targets, handleClearTodayMeals } = useApp();
+  const [isResetModalOpen, setIsResetModalOpen] = React.useState(false);
+
+  const handleConfirmedReset = async () => {
+    setIsResetModalOpen(false);
+    try {
+      await handleClearTodayMeals();
+    } catch (err) {
+      console.error('Erro ao resetar os valores de hoje', err);
+    }
+  };
 
   // Estado e Efeito para forçar o reset/re-render automático dos macros na virada do dia (00h)
   const [currentDay, setCurrentDay] = React.useState(new Date().toDateString());
@@ -316,10 +327,45 @@ export const Dashboard: React.FC<DashboardProps> = ({
       </div>
 
       {/* Quick Access Actions */}
-      <button className="btn" onClick={onNavigateToCamera} style={{ marginTop: '10px', padding: '16px', display: 'flex', gap: '8px', boxShadow: '0 4px 12px rgba(16, 185, 129, 0.15)' }}>
-        <Camera size={18} aria-hidden="true" />
-        Escanear Novo Alimento
-      </button>
+      <div style={{ display: 'flex', gap: '12px', marginTop: '10px' }}>
+        <button 
+          className="btn" 
+          onClick={onNavigateToCamera} 
+          style={{ flex: 1, padding: '16px', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px', boxShadow: '0 4px 12px rgba(16, 185, 129, 0.15)' }}
+        >
+          <Camera size={18} aria-hidden="true" />
+          Escanear Alimento
+        </button>
+        <button 
+          className="btn btn-secondary btn-danger" 
+          onClick={() => setIsResetModalOpen(true)} 
+          style={{ 
+            flex: 1, 
+            padding: '16px', 
+            display: 'flex', 
+            justifyContent: 'center', 
+            alignItems: 'center', 
+            gap: '8px', 
+            border: '1px solid rgba(239, 68, 68, 0.25)', 
+            background: 'rgba(239, 68, 68, 0.05)', 
+            color: 'var(--color-cal)' 
+          }}
+        >
+          <RotateCcw size={18} aria-hidden="true" />
+          Zerar Hoje
+        </button>
+      </div>
+
+      <ConfirmModal
+        isOpen={isResetModalOpen}
+        title="Zerar valores de hoje?"
+        message="Esta ação apagará permanentemente todas as refeições registradas no dia de hoje. Deseja continuar?"
+        confirmLabel="Sim, Zerar"
+        cancelLabel="Cancelar"
+        danger={true}
+        onConfirm={handleConfirmedReset}
+        onCancel={() => setIsResetModalOpen(false)}
+      />
     </div>
   );
 };

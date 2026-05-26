@@ -41,6 +41,7 @@ interface AppContextValue {
   saveSettings: (key: string, model: string, context: string, targets: NutritionTargets, weight: number, height: number) => Promise<void>;
   handleImportMealsFromText: (text: string) => Promise<number>;
   saveExtractedMeals: (extractedMeals: ExtractedMeal[]) => Promise<number>;
+  handleClearTodayMeals: () => Promise<void>;
   
   // Supabase Auth Integration
   session: any;
@@ -443,6 +444,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const handleClearTodayMeals = async () => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const startOfToday = today.getTime();
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const endOfToday = tomorrow.getTime();
+
+    const todayMeals = meals.filter(meal => meal.timestamp >= startOfToday && meal.timestamp < endOfToday);
+    const todayIds = todayMeals.map(m => m.id);
+
+    setMeals(prev => prev.filter(meal => !todayIds.includes(meal.id)));
+
+    try {
+      await Promise.all(todayIds.map(id => deleteMealFromDB(id)));
+    } catch (e) {
+      logger.error('Erro ao deletar refeições de hoje no IndexedDB', e);
+      throw e;
+    }
+  };
+
   return (
     <AppContext.Provider
       value={{
@@ -471,6 +493,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         saveSettings,
         handleImportMealsFromText,
         saveExtractedMeals,
+        handleClearTodayMeals,
         
         session,
         user,
