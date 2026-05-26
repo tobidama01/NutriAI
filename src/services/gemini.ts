@@ -165,6 +165,60 @@ function safeParseGeminiJson<T>(raw: string): T {
   }
 }
 
+export class GeminiQuotaExceededError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GeminiQuotaExceededError';
+  }
+}
+
+const JSON_FALLBACK_MODELS = [
+  'gemini-2.0-flash',
+  'gemini-1.5-flash',
+  'gemini-2.5-pro-preview-06-05',
+  'gemini-1.5-pro'
+];
+
+const CHAT_FALLBACK_MODELS = [
+  'gemini-2.0-flash',
+  'gemini-1.5-flash',
+  'gemini-2.5-pro-preview-06-05',
+  'gemini-1.5-pro',
+  'gemini-2.0-flash-thinking-exp'
+];
+
+async function runWithModelFallback<T>(
+  initialModel: string,
+  isJsonEndpoint: boolean,
+  execute: (model: string) => Promise<T>
+): Promise<T> {
+  const fallbackList = isJsonEndpoint ? JSON_FALLBACK_MODELS : CHAT_FALLBACK_MODELS;
+
+  // Filtra o modelo inicial da lista e coloca ele no começo
+  const modelsToTry = [
+    initialModel,
+    ...fallbackList.filter(m => m !== initialModel)
+  ];
+
+  let lastError: any = null;
+
+  for (const model of modelsToTry) {
+    try {
+      logger.info(`Tentando chamar a API do Gemini com o modelo: ${model}`);
+      return await execute(model);
+    } catch (error: any) {
+      if (error instanceof GeminiQuotaExceededError || error.name === 'GeminiQuotaExceededError') {
+        logger.warn(`Modelo ${model} retornou erro de limite/quota excedido. Tentando fallback...`);
+        lastError = error;
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  throw lastError || new Error('Todos os modelos do Gemini falharam devido a limites de requisições excedidos.');
+}
+
 /**
  * Trata erros específicos de status da API do Gemini para mensagens amigáveis.
  */
@@ -175,6 +229,18 @@ async function handleGeminiError(response: Response): Promise<never> {
   } catch { /* ignore */ }
 
   const errorMessage = (body?.error as Record<string, any>)?.message as string || '';
+  const errorMessageLower = errorMessage.toLowerCase();
+
+  const isQuotaError = response.status === 429 || 
+                       errorMessageLower.includes('quota') || 
+                       errorMessageLower.includes('rate limit') || 
+                       errorMessageLower.includes('limit exceeded');
+
+  if (isQuotaError) {
+    throw new GeminiQuotaExceededError(
+      `Limite de requisições excedido: ${errorMessage || 'Aguarde alguns instantes e tente novamente.'}`
+    );
+  }
 
   switch (response.status) {
     case 400:
@@ -183,8 +249,6 @@ async function handleGeminiError(response: Response): Promise<never> {
       throw new Error('Chave de API inválida ou expirada. Vá na aba de Ajustes e configure a chave do Gemini.');
     case 403:
       throw new Error('Acesso negado. Sua chave de API não tem permissão para acessar este modelo. Verifique as configurações no Google AI Studio.');
-    case 429:
-      throw new Error('Limite de requisições excedido na API da Google. Aguarde alguns instantes e tente novamente.');
     case 500:
     case 503:
       throw new Error('O servidor do Gemini está temporariamente indisponível. Aguarde alguns instantes e tente novamente.');
@@ -261,12 +325,9 @@ Responda rigorosamente seguindo o seguinte formato de objeto JSON:
   "sodium": 15.0, // sódio em mg (inteiro ou decimal)
   "confidenceScale": 0.95, // confiança na leitura do peso da balança (0.0 a 1.0)
   "confidenceFood": 0.90, // confiança na identificação do alimento (0.0 a 1.0)
-  "scaleReadText": "150g", // o texto literal do peso lido no visor da balança (ex: "150", "150 g", "0.15")
   "explanation": "Explicação breve em português da detecção"
 }
 `;
-
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
 
   const payload = {
     contents: [
@@ -319,27 +380,31 @@ Responda rigorosamente seguindo o seguinte formato de objeto JSON:
   };
 
   try {
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
-      },
-      body: JSON.stringify(payload),
+    return await runWithModelFallback(modelName, true, async (activeModel) => {
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:generateContent`;
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        await handleGeminiError(response);
+      }
+
+      const data = await response.json();
+      const textResponse = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+      if (!textResponse) {
+        throw new Error('Resposta vazia da API do Gemini.');
+      }
+
+      return safeParseGeminiJson<GeminiAnalysisResult>(textResponse);
     });
-
-    if (!response.ok) {
-      await handleGeminiError(response);
-    }
-
-    const data = await response.json();
-    const textResponse = data.candidates?.[0]?.content?.parts?.[0]?.text;
-
-    if (!textResponse) {
-      throw new Error('Resposta vazia da API do Gemini.');
-    }
-
-    return safeParseGeminiJson<GeminiAnalysisResult>(textResponse);
   } catch (error) {
     logger.error('Erro ao analisar alimento com Gemini', error);
     throw error;
@@ -369,8 +434,6 @@ export async function chatWithNutritionist(
   }
 
   await checkRateLimit();
-
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
 
   // OTIMIZAÇÃO: Filtra apenas refeições dos últimos 7 dias para evitar sobrecarga de tokens
   const now = Date.now();
@@ -469,27 +532,31 @@ Importante:
   };
 
   try {
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
-      },
-      body: JSON.stringify(payload),
+    return await runWithModelFallback(modelName, false, async (activeModel) => {
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:generateContent`;
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        await handleGeminiError(response);
+      }
+
+      const data = await response.json();
+      const reply = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+      if (!reply) {
+        throw new Error('Sem resposta do modelo Gemini.');
+      }
+
+      return reply.trim();
     });
-
-    if (!response.ok) {
-      await handleGeminiError(response);
-    }
-
-    const data = await response.json();
-    const reply = data.candidates?.[0]?.content?.parts?.[0]?.text;
-
-    if (!reply) {
-      throw new Error('Sem resposta do modelo Gemini.');
-    }
-
-    return reply.trim();
   } catch (error) {
     logger.error('Erro na chamada de chat com Gemini', error);
     throw error;
@@ -519,8 +586,6 @@ export async function calculateWorkoutCalories(
   }
 
   await checkRateLimit();
-
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
 
   const promptText = `
 Você é uma inteligência artificial especialista em fisiologia do exercício, educação física e nutrição esportiva.
@@ -581,27 +646,31 @@ Responda rigorosamente seguindo o seguinte formato de objeto JSON:
   };
 
   try {
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
-      },
-      body: JSON.stringify(payload),
+    return await runWithModelFallback(modelName, true, async (activeModel) => {
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:generateContent`;
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        await handleGeminiError(response);
+      }
+
+      const data = await response.json();
+      const textResponse = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+      if (!textResponse) {
+        throw new Error('Resposta vazia da API do Gemini.');
+      }
+
+      return safeParseGeminiJson<WorkoutAnalysisResult>(textResponse);
     });
-
-    if (!response.ok) {
-      await handleGeminiError(response);
-    }
-
-    const data = await response.json();
-    const textResponse = data.candidates?.[0]?.content?.parts?.[0]?.text;
-
-    if (!textResponse) {
-      throw new Error('Resposta vazia da API do Gemini.');
-    }
-
-    return safeParseGeminiJson<WorkoutAnalysisResult>(textResponse);
   } catch (error) {
     logger.error('Erro ao calcular gasto calórico do treino com Gemini', error);
     throw error;
@@ -644,7 +713,12 @@ export async function extractMealsFromChatHistory(
 
   await checkRateLimit();
 
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
+  // Otimização: Limita o tamanho do texto para evitar estourar o limite de tokens da API.
+  // Como as refeições de hoje estarão no final do arquivo de histórico, mantemos os últimos 30.000 caracteres.
+  const maxChatLength = 30000;
+  const optimizedChatText = chatText.length > maxChatLength 
+    ? "... [Histórico longo truncado para otimização] ...\n" + chatText.substring(chatText.length - maxChatLength)
+    : chatText;
 
   const today = new Date();
   const todayDateStr = today.toLocaleDateString('pt-BR', {
@@ -701,7 +775,7 @@ Siga rigorosamente este formato de retorno JSON:
       {
         parts: [
           { text: promptText },
-          { text: `TEXTO PARA ANÁLISE:\n\n${chatText}` }
+          { text: `TEXTO PARA ANÁLISE:\n\n${optimizedChatText}` }
         ]
       }
     ],
@@ -745,27 +819,31 @@ Siga rigorosamente este formato de retorno JSON:
   };
 
   try {
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
-      },
-      body: JSON.stringify(payload),
+    return await runWithModelFallback(modelName, true, async (activeModel) => {
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:generateContent`;
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        await handleGeminiError(response);
+      }
+
+      const data = await response.json();
+      const textResponse = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+      if (!textResponse) {
+        throw new Error('Resposta vazia da IA na extração de refeições.');
+      }
+
+      return safeParseGeminiJson<ExtractedMealsResult>(textResponse);
     });
-
-    if (!response.ok) {
-      await handleGeminiError(response);
-    }
-
-    const data = await response.json();
-    const textResponse = data.candidates?.[0]?.content?.parts?.[0]?.text;
-
-    if (!textResponse) {
-      throw new Error('Resposta vazia da IA na extração de refeições.');
-    }
-
-    return safeParseGeminiJson<ExtractedMealsResult>(textResponse);
   } catch (error) {
     logger.error('Erro ao extrair refeições do histórico do chat', error);
     throw error;

@@ -50,10 +50,22 @@ export function openDB(): Promise<IDBDatabase> {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
 
     request.onerror = () => reject(request.error);
+    
+    request.onblocked = () => {
+      reject(new Error("Conexão ao IndexedDB bloqueada por outra aba aberta. Feche outras abas do aplicativo e recarregue."));
+    };
+
     request.onsuccess = () => {
       dbInstance = request.result;
       dbInstance.onclose = () => {
         dbInstance = null;
+      };
+      dbInstance.onversionchange = () => {
+        dbInstance?.close();
+        dbInstance = null;
+        if (typeof window !== 'undefined') {
+          window.location.reload();
+        }
       };
       resolve(dbInstance);
     };

@@ -255,10 +255,14 @@ export const Settings: React.FC<SettingsProps> = ({
         setImportStatus('Histórico importado! Analisando refeições de hoje no texto...');
         
         let mealsImportedCount = 0;
+        let importMealsFailed = false;
+        let mealsErrorMessage = '';
         try {
           mealsImportedCount = await handleImportMealsFromText(rawInput);
-        } catch (mealsErr) {
+        } catch (mealsErr: any) {
           console.error('Erro ao extrair refeições do histórico do chat', mealsErr);
+          importMealsFailed = true;
+          mealsErrorMessage = mealsErr.message || 'Erro de conexão/limite';
         }
 
         if (mealsImportedCount > 0) {
@@ -266,6 +270,12 @@ export const Settings: React.FC<SettingsProps> = ({
           setAlertConfig({
             title: 'Chat e Macros Sincronizados',
             message: `O histórico foi importado com sucesso! Além disso, a Nutri IA identificou ${mealsImportedCount} refeição(ões) de hoje no texto e atualizou seus macros consumidos no Dashboard automaticamente.`
+          });
+        } else if (importMealsFailed) {
+          setImportStatus(`Importado (com erro na extração de macros).`);
+          setAlertConfig({
+            title: 'Importado com Alertas',
+            message: `O histórico foi importado com sucesso. Contudo, a sincronização automática de macros falhou: ${mealsErrorMessage}.`
           });
         } else {
           setImportStatus(`Sucesso! ${parsedMessages.length} mensagens importadas.`);
