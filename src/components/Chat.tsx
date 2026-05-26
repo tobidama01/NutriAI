@@ -158,14 +158,21 @@ export const Chat: React.FC = () => {
 
       if (match) {
         textToShow = reply.replace(syncRegex, '').trim();
-        const jsonText = match[1].trim();
+        let jsonText = match[1].trim();
+        
+        // Limpeza defensiva contra markdown fences embutidas pela IA no JSON
+        jsonText = jsonText
+          .replace(/^```(?:json)?\s*/i, '')
+          .replace(/\s*```$/, '')
+          .trim();
+
         try {
           const parsed = JSON.parse(jsonText);
           if (parsed && Array.isArray(parsed.meals)) {
             await saveExtractedMeals(parsed.meals);
           }
         } catch (jsonErr) {
-          console.error('Erro ao interpretar JSON de sincronização automática de macros:', jsonErr);
+          console.error('Erro ao interpretar JSON de sincronização automática de macros:', jsonErr, 'JSON Bruto:', jsonText);
         }
       }
 
